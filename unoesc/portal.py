@@ -15,6 +15,8 @@ MODULOS = {
     "avaliacoes":            "/portal/modules/prof/avaliacao.jspa",
     "ocorrencias":           "/portal/modules/prof/alunoCursoObservacao.jspa",
     "mensagem_alunos":       "/portal/modules/prof/sendmail.jspa",
+    "mensagem_selecionar":   "/portal/modules/prof/sendmail2.jspa",
+    "mensagem_compor":       "/portal/modules/prof/sendmail3.jspa",
     "mensagem_formados":     "/portal/modules/prof/sendmailFormado.jspa?evt=formado",
     "mensagem_professores":  "/portal/modules/prof/sendmailprof.jspa",
     "notificacao_on":        "/portal/modules/prof/sendNotificationProfessor.jspa",
@@ -110,28 +112,452 @@ def buscar_disciplina(session: Session, termo: str) -> dict | None:
 # ── Diário de Classe ──────────────────────────────────────────────────────────
 
 def listar_diarios(session: Session, ano_periodo: str | None = None) -> list[dict]:
-    """Lista diários de classe disponíveis para preenchimento.
-
-    Returns:
-        list[dict] com colunas: Componente curricular, Fase, Turma,
-        Estudantes, Pessoas com Deficiência (PcD).
-    """
-    params = {"selAnoPeriodo": ano_periodo} if ano_periodo else None
-    resp = _get(session, "diario_classe", params)
-    return _tabela(_soup(resp.text))
-
-
-def abrir_diario(session: Session, cod_disciplina_ofertada: str) -> str:
-    """Retorna HTML bruto do diário de classe de uma disciplina.
+    """Lista diários de classe do professor no período.
 
     Args:
-        cod_disciplina_ofertada: código numérico da disciplina ofertada.
+        ano_periodo: ex. ``"2026/1"``. None = período selecionado no portal.
+
+    Returns:
+        list[dict]: [{dof, nome, codigo, fase, turma, estudantes, pcd, bloqueado}]
+          - dof:        identificador da oferta (abre encontros/presenças)
+          - bloqueado:  True quando o plano de ensino não está deferido
+                        (sem link para o diário)
+    """
+    data = {"submit": "Consultar"}
+    if ano_periodo:
+        data["selAnoPeriodo"] = ano_periodo
+    resp = _post(session, "diario_classe", data)
+    soup = _soup(resp.text)
+    result = []
+    for tr in soup.find_all("tr"):
+        link = tr.find("a", href=re.compile(r"diarioClasseAulas\.jspa\?dof=(\d+)"))
+        cells = [re.sub(r"\s+", " ", td.get_text()).strip() for td in tr.find_all("td")]
+        if not cells:
+            continue
+        # Linha típica: componente | obs | fase | turma | estudantes | pcd
+        componente = cells[0] if cells else ""
+        if not re.search(r"\d{4,5}\s*-", componente):
+            continue
+        partes = componente.split(" - ", 1)
+        codigo = partes[0].strip()
+        nome = partes[1].strip() if len(partes) > 1 else componente
+        dof = None
+        bloqueado = True
+        if link:
+            m = re.search(r"dof=(\d+)", link.get("href", ""))
+            if m:
+                dof = m.group(1)
+                bloqueado = False
+                nome_link = re.sub(r"\s+", " ", link.get_text()).strip()
+                if nome_link:
+                    partes_l = nome_link.split(" - ", 1)
+                    codigo = partes_l[0].strip()
+                    nome = partes_l[1].strip() if len(partes_l) > 1 else nome_link
+        # Colunas: componente | obs | fase | turma | (vazio/ícone) | estudantes | pcd
+        result.append({
+            "dof":        dof,
+            "codigo":     codigo,
+            "nome":       nome,
+            "fase":       cells[2] if len(cells) > 2 else "",
+            "turma":      cells[3] if len(cells) > 3 else "",
+            "estudantes": cells[5] if len(cells) > 5 else (cells[4] if len(cells) > 4 else ""),
+            "pcd":        cells[6] if len(cells) > 6 else (cells[5] if len(cells) > 5 else ""),
+            "bloqueado":  bloqueado,
+        })
+    return result
+
+
+def abrir_diario(session: Session, dof: str) -> str:
+    """Retorna HTML bruto do quadro de encontros do diário.
+
+    Args:
+        dof: código DOF da disciplina ofertada.
     """
     resp = session.get(
-        f"{BASE_URL}/portal/modules/prof/diarioClasse.jspa",
-        params={"codDisciplinaOfertada": cod_disciplina_ofertada},
+        f"{BASE_URL}{MODULOS['diario_aulas']}",
+        params={"dof": dof},
     )
     return resp.text
+
+
+def listar_encontros(session: Session, dof: str) -> list[dict]:
+    """Lista os encontros (aulas) do quadro do diário de classe.
+
+    Args:
+        dof: código DOF da disciplina (campo ``dof`` de ``listar_diarios`` /
+             ``listar_disciplinas``).
+
+    Returns:
+        list[dict]: [{aula, titulo, data, matriculados, presencial, pode_remover}]
+          - aula:         ID usado em ``obter_presencas_encontro`` / salvar faltas
+          - presencial:   True/False/None
+          - pode_remover: se o portal exibe "Remover Encontro"
+    """
+    resp = session.post(
+        f"{BASE_URL}/portal/modules/prof/diarioClasseAulasQuadro.jspa",
+        data={"action": "getQuadro", "dof": dof},
+    )
+    soup = _soup(resp.text)
+    encontros = []
+    for div in soup.find_all("div", id=re.compile(r"^a_\d+")):
+        aula_id = div.get("id", "").replace("a_", "", 1)
+        titulo_el = div.find("h3")
+        titulo = re.sub(r"\s+", " ", titulo_el.get_text()).strip() if titulo_el else ""
+        texto = re.sub(r"\s+", " ", div.get_text(" ")).strip()
+        m_data = re.search(r"Data:\s*(.+?)(?:\s+Matriculados:|$)", texto)
+        m_mat = re.search(r"Matriculados:\s*(\d+)", texto)
+        presencial = None
+        if re.search(r"\bNão presencial\b", texto, re.I):
+            presencial = False
+        elif re.search(r"\bPresencial\b", texto, re.I):
+            presencial = True
+        encontros.append({
+            "aula":         aula_id,
+            "titulo":       titulo,
+            "data":         m_data.group(1).strip() if m_data else "",
+            "matriculados": int(m_mat.group(1)) if m_mat else None,
+            "presencial":   presencial,
+            "pode_remover": "Remover Encontro" in texto or "delEncontro" in str(div),
+        })
+    return encontros
+
+
+def adicionar_encontro(session: Session, dof: str) -> dict:
+    """Adiciona um encontro ao quadro do diário (mesma ação do botão do portal).
+
+    Returns:
+        dict com {sucesso, status_code, encontros}
+    """
+    resp = session.post(
+        f"{BASE_URL}/portal/modules/prof/diarioClasseAulasQuadro.jspa",
+        data={"action": "addEncontro", "dof": dof},
+    )
+    return {
+        "sucesso": resp.status_code == 200,
+        "status_code": resp.status_code,
+        "encontros": listar_encontros(session, dof) if resp.status_code == 200 else [],
+    }
+
+
+def remover_encontro(session: Session, aula: str, dof: str | None = None) -> dict:
+    """Remove um encontro do quadro.
+
+    Falha se houver QR Code de presença em aberto.
+
+    Args:
+        aula: ID do encontro.
+        dof:  opcional; se informado, devolve a lista atualizada de encontros.
+    """
+    resp = session.post(
+        f"{BASE_URL}/portal/modules/prof/diarioClasseAulasQuadro.jspa",
+        data={"action": "delEncontro", "aula": aula},
+    )
+    out = {
+        "sucesso": resp.status_code == 200,
+        "status_code": resp.status_code,
+    }
+    if dof and resp.status_code == 200:
+        out["encontros"] = listar_encontros(session, dof)
+    return out
+
+
+def definir_encontro_presencial(session: Session, aula: str, presencial: bool) -> dict:
+    """Marca o encontro como presencial (S) ou não presencial (N).
+
+    Em EAD, encontros não presenciais ocultam o quadro de faltas.
+    """
+    resp = session.post(
+        f"{BASE_URL}/portal/modules/prof/diarioClassePresencasTipo.jspa",
+        data={
+            "action": "setPresencial",
+            "aula": aula,
+            "presencial": "S" if presencial else "N",
+        },
+    )
+    return {"sucesso": resp.status_code == 200, "status_code": resp.status_code}
+
+
+def _parse_presencas_html(html: str) -> dict:
+    """Extrai metadados e alunos da página Conteúdo/Faltas."""
+    soup = _soup(html)
+    if "Diário de Classe publicado" in html:
+        h2 = soup.find("h2")
+        return {
+            "publicado": True,
+            "disciplina": re.sub(r"\s+", " ", h2.get_text()).strip() if h2 else "",
+            "aula": None,
+            "alunos": [],
+            "mensagem": "Diário de Classe publicado! Contate a Secretaria Acadêmica!",
+        }
+
+    form = soup.find("form", id="frmPres") or soup.find("form")
+    def _val(name, default=""):
+        if not form:
+            return default
+        el = form.find(["input", "textarea", "select"], attrs={"name": name})
+        if not el:
+            return default
+        if el.name == "textarea":
+            return el.get_text()
+        if el.name == "select":
+            opt = el.find("option", selected=True) or el.find("option")
+            return opt.get("value", "") if opt else default
+        return el.get("value", default) or default
+
+    aula = _val("aula")
+    alunos = []
+    for inp in soup.select("input[name^=presencas_]"):
+        ra = inp["name"].split("_", 1)[1]
+        tr = inp.find_parent("tr")
+        tds_txt = []
+        if tr:
+            for td in tr.find_all("td", recursive=False):
+                # tooltip "Dados pessoais" polui o texto — remove antes de ler
+                clone = _soup(str(td)).find("td")
+                tip = clone.select_one(".tooltiptext") if clone else None
+                if tip:
+                    tip.decompose()
+                tds_txt.append(re.sub(r"\s+", " ", clone.get_text(" ")).strip() if clone else "")
+        # Colunas: faltas | código | nome | campus | curso | total | situação | histórico
+        onchange = inp.get("onchange", "")
+        m_adm = re.search(r"atualizaTotalFaltasAndSituacao\(\s*this\s*,\s*(\d+)\s*\)", onchange)
+        total_el = soup.find("input", {"name": f"inputTotalFaltas_{ra}"})
+        lanc_el = soup.find("input", {"name": f"inputFaltasLancadasNoEncontro_{ra}"})
+        alunos.append({
+            "ra":              ra,
+            "nome":            tds_txt[2] if len(tds_txt) > 2 else "",
+            "campus":          tds_txt[3] if len(tds_txt) > 3 else "",
+            "curso":           tds_txt[4] if len(tds_txt) > 4 else "",
+            "faltas":          int(inp.get("value") or 0),
+            "total_faltas":    int(total_el.get("value") or 0) if total_el else None,
+            "faltas_encontro_salvas": int(lanc_el.get("value") or 0) if lanc_el else None,
+            "situacao":        tds_txt[6] if len(tds_txt) > 6 else "",
+            "cod_adm":         m_adm.group(1) if m_adm else None,
+        })
+
+    h2 = soup.find("h2")
+    return {
+        "publicado":     False,
+        "disciplina":    re.sub(r"\s+", " ", h2.get_text()).strip() if h2 else "",
+        "aula":          aula,
+        "data_inicial":  _val("dataula"),
+        "data_final":    _val("dataulafinal"),
+        "qtd_aulas":     _val("qtdaulas"),
+        "conteudo":      _val("conteudo"),
+        "observacoes":   _val("obs"),
+        "alunos":        alunos,
+        "mensagem":      None,
+    }
+
+
+def obter_presencas_encontro(session: Session, aula: str) -> dict:
+    """Lê conteúdo e lançamento de faltas de um encontro.
+
+    Args:
+        aula: ID do encontro (campo ``aula`` de ``listar_encontros``).
+
+    Returns:
+        dict com disciplina, datas, conteúdo, observações e lista de alunos
+        ``[{ra, nome, faltas, total_faltas, situacao, ...}]``.
+
+        Se o diário estiver publicado, ``publicado=True`` e ``alunos=[]``.
+    """
+    resp = session.get(
+        f"{BASE_URL}/portal/modules/prof/diarioClassePresencas.jspa",
+        params={"aula": aula},
+    )
+    data = _parse_presencas_html(resp.text)
+    data["status_code"] = resp.status_code
+    return data
+
+
+def salvar_presencas_encontro(
+    session: Session,
+    aula: str,
+    faltas: dict[str, int] | None = None,
+    *,
+    conteudo: str | None = None,
+    observacoes: str | None = None,
+    data_inicial: str | None = None,
+    data_final: str | None = None,
+    qtd_aulas: str | int | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Salva conteúdo e/ou faltas de um encontro.
+
+    O portal grava o formulário inteiro: valores omitidos são reenviados
+    como estão hoje na tela.
+
+    Args:
+        aula:          ID do encontro.
+        faltas:        ``{RA: n_faltas}`` neste encontro (0 = presente).
+                       RAs omitidos mantêm o valor atual.
+        conteudo:      texto do conteúdo ministrado (até 4000 chars).
+        observacoes:   observações do encontro.
+        data_inicial / data_final: ``dd/mm/yyyy``.
+        qtd_aulas:     quantidade de aulas do encontro (limite de faltas).
+        dry_run:       se True, monta o payload e não envia.
+
+    Returns:
+        dict com {sucesso, status_code, publicado, alterados, dry_run, ...}
+    """
+    atual = obter_presencas_encontro(session, aula)
+    if atual.get("publicado"):
+        return {
+            "sucesso": False,
+            "publicado": True,
+            "mensagem": atual.get("mensagem"),
+            "alterados": [],
+        }
+    if not atual.get("alunos"):
+        return {
+            "sucesso": False,
+            "publicado": False,
+            "mensagem": "Nenhum aluno encontrado na lista de presença.",
+            "alterados": [],
+        }
+
+    faltas = {str(k): int(v) for k, v in (faltas or {}).items()}
+    idx = {a["ra"]: a for a in atual["alunos"]}
+    desconhecidos = sorted(set(faltas) - set(idx))
+    alterados = []
+    for ra, n in faltas.items():
+        if ra in idx and idx[ra]["faltas"] != n:
+            alterados.append({"ra": ra, "nome": idx[ra]["nome"], "de": idx[ra]["faltas"], "para": n})
+
+    # Recarrega HTML para hidden fields e valores base
+    resp_get = session.get(
+        f"{BASE_URL}/portal/modules/prof/diarioClassePresencas.jspa",
+        params={"aula": aula},
+    )
+    soup = _soup(resp_get.text)
+    form = soup.find("form", id="frmPres") or soup.find("form")
+    if not form:
+        return {"sucesso": False, "mensagem": "Formulário de presença não encontrado.", "alterados": alterados}
+
+    data: dict[str, str] = {}
+    for el in form.find_all(["input", "textarea", "select"]):
+        name = el.get("name")
+        if not name or el.get("type") == "submit":
+            continue
+        if el.name == "textarea":
+            data[name] = el.get_text()
+        elif el.name == "select":
+            opt = el.find("option", selected=True)
+            data[name] = opt.get("value", "") if opt else ""
+        elif el.get("type") == "checkbox":
+            if el.has_attr("checked"):
+                data[name] = el.get("value", "on")
+        else:
+            data[name] = el.get("value", "") or ""
+
+    data["aula"] = str(aula)
+    data["action"] = "salvarPresencas"
+    data["submit"] = "Salvar"
+
+    if conteudo is not None:
+        data["conteudo"] = conteudo
+    if observacoes is not None:
+        data["obs"] = observacoes
+    if data_inicial is not None:
+        data["dataula"] = data_inicial
+    if data_final is not None:
+        data["dataulafinal"] = data_final
+    if qtd_aulas is not None:
+        data["qtdaulas"] = str(qtd_aulas)
+
+    qtd_limite = int(data.get("qtdaulas") or atual.get("qtd_aulas") or 0)
+    for ra, n in faltas.items():
+        if ra not in idx:
+            continue
+        if n < 0:
+            raise ValueError(f"Faltas negativas para RA {ra}.")
+        if qtd_limite and n > qtd_limite:
+            raise ValueError(
+                f"Faltas ({n}) > qtd_aulas ({qtd_limite}) para RA {ra}."
+            )
+        data[f"presencas_{ra}"] = str(n)
+
+    if dry_run:
+        return {
+            "sucesso": True,
+            "dry_run": True,
+            "publicado": False,
+            "alterados": alterados,
+            "desconhecidos": desconhecidos,
+            "payload_campos": len(data),
+        }
+
+    resp = session.post(
+        f"{BASE_URL}/portal/modules/prof/diarioClassePresencas.jspa",
+        data=data,
+    )
+    pos = _parse_presencas_html(resp.text)
+    return {
+        "sucesso": resp.status_code == 200 and not pos.get("publicado"),
+        "status_code": resp.status_code,
+        "dry_run": False,
+        "publicado": bool(pos.get("publicado")),
+        "alterados": alterados,
+        "desconhecidos": desconhecidos,
+        "alunos": pos.get("alunos", []),
+        "mensagem": pos.get("mensagem"),
+    }
+
+
+def lancar_faltas(
+    session: Session,
+    aula: str,
+    faltosos: dict[str, int] | list[str] | None = None,
+    *,
+    presentes: list[str] | None = None,
+    zerar_demais: bool = False,
+    dry_run: bool = False,
+    **kwargs,
+) -> dict:
+    """Atalho amigável para lançar faltas em um encontro.
+
+    Args:
+        aula:         ID do encontro.
+        faltosos:     ``{RA: n_faltas}`` ou lista de RAs (1 falta cada).
+        presentes:    RAs marcados com 0 falta.
+        zerar_demais: se True, quem não estiver em ``faltosos`` recebe 0.
+        dry_run:      não envia; só simula.
+        **kwargs:     repassados a ``salvar_presencas_encontro``
+                      (conteudo, observacoes, datas, ...).
+
+    Examples:
+        # Só marca faltosos; demais ficam como estão
+        lancar_faltas(s, aula, {"412507": 2, "414049": 1})
+
+        # Todo mundo presente, exceto esses
+        lancar_faltas(s, aula, faltosos=["412507"], zerar_demais=True)
+    """
+    mapa: dict[str, int] = {}
+    if isinstance(faltosos, dict):
+        mapa.update({str(k): int(v) for k, v in faltosos.items()})
+    elif isinstance(faltosos, list):
+        mapa.update({str(ra): 1 for ra in faltosos})
+
+    if presentes:
+        for ra in presentes:
+            mapa[str(ra)] = 0
+
+    if zerar_demais:
+        atual = obter_presencas_encontro(session, aula)
+        if atual.get("publicado"):
+            return {
+                "sucesso": False,
+                "publicado": True,
+                "mensagem": atual.get("mensagem"),
+                "alterados": [],
+            }
+        for a in atual.get("alunos", []):
+            mapa.setdefault(a["ra"], 0)
+
+    return salvar_presencas_encontro(
+        session, aula, faltas=mapa or None, dry_run=dry_run, **kwargs
+    )
 
 
 # ── Plano de Ensino ───────────────────────────────────────────────────────────
@@ -184,56 +610,388 @@ def lista_estudantes_a2(session: Session, ano_periodo: str | None = None) -> lis
 
 # ── Mensagens ─────────────────────────────────────────────────────────────────
 
-def listar_alunos_para_mensagem(session: Session, ano_periodo: str | None = None) -> list[dict]:
-    """Lista alunos disponíveis para receber mensagem direta.
+def _as_list(valor: str | list[str] | None) -> list[str]:
+    if valor is None:
+        return []
+    if isinstance(valor, list):
+        return [str(v) for v in valor]
+    return [str(valor)]
+
+
+def _resolver_dofs(session: Session, disciplinas: str | list[str] | None) -> list[str]:
+    """Aceita DOF numérico (7+ dígitos), código ou nome da disciplina."""
+    itens = _as_list(disciplinas)
+    if not itens:
+        raise ValueError("Informe ao menos uma disciplina (DOF ou nome/código).")
+
+    # DOFs conhecidos das telas de mensagem / aula online
+    dofs_validos: set[str] = set()
+    try:
+        dofs_validos.update(t["dof"] for t in listar_turmas_mensagem(session) if t.get("dof"))
+    except Exception:
+        pass
+    try:
+        dofs_validos.update(d["dof"] for d in listar_disciplinas(session) if d.get("dof"))
+    except Exception:
+        pass
+
+    dofs: list[str] = []
+    for item in itens:
+        if item.isdigit() and (item in dofs_validos or len(item) >= 7):
+            dofs.append(item)
+            continue
+        disc = buscar_disciplina(session, item)
+        if not disc:
+            raise ValueError(f"Disciplina '{item}' não encontrada.")
+        dofs.append(disc["dof"])
+
+    vistos: set[str] = set()
+    out: list[str] = []
+    for d in dofs:
+        if d not in vistos:
+            vistos.add(d)
+            out.append(d)
+    return out
+
+
+def listar_turmas_mensagem(session: Session, ano_periodo: str | None = None) -> list[dict]:
+    """Lista turmas disponíveis para mensagem direta / push.
 
     Returns:
-        list[dict] com nome, RA e e-mail.
+        list[dict] com dof, componente, fase, turma, estudantes.
     """
     params = {"selAnoPeriodo": ano_periodo} if ano_periodo else None
     resp = _get(session, "mensagem_alunos", params)
-    return _tabela(_soup(resp.text))
+    soup = _soup(resp.text)
+    rows = _tabela(soup)
+    dofs_por_ordem = [
+        cb.get("value")
+        for cb in soup.select("input[name='discturma[]']")
+        if cb.get("value")
+    ]
+    result = []
+    for i, row in enumerate(rows):
+        dof = dofs_por_ordem[i] if i < len(dofs_por_ordem) else ""
+        result.append({
+            "dof":        dof,
+            "componente": row.get("Componente curricular", ""),
+            "fase":       row.get("Fase", ""),
+            "turma":      row.get("Turma", ""),
+            "estudantes": row.get("Estudantes", ""),
+            "pcd":        row.get("Pessoas com Deficiência (PcD)", ""),
+        })
+    return result
 
 
-def enviar_mensagem_alunos(session: Session, alunos: str | list[str], assunto: str, mensagem: str, origem: str = "") -> bool:
-    """Envia mensagem acadêmica direta para alunos.
+def listar_alunos_para_mensagem(
+    session: Session,
+    disciplinas: str | list[str],
+    ano_periodo: str | None = None,
+) -> list[dict]:
+    """Lista alunos (RA, nome, e-mail) das turmas selecionadas.
 
     Args:
-        alunos:   RA (str) ou lista de RAs.
-        assunto:  assunto da mensagem.
-        mensagem: corpo da mensagem.
-        origem:   campo de origem opcional.
+        disciplinas: DOF, nome/código da disciplina, ou lista.
+        ano_periodo: opcional (ex. '2026/1') — aplicado na tela inicial.
 
     Returns:
-        True se enviado com sucesso.
+        list[dict]: [{ra, nome, email, dof}, ...]
     """
-    data = {
-        "origem":     origem,
-        "assunto":    assunto,
-        "mensagem":   mensagem,
-        "sel_alunos": alunos if isinstance(alunos, list) else [alunos],
-        "compor":     "1",
+    if ano_periodo:
+        _get(session, "mensagem_alunos", {"selAnoPeriodo": ano_periodo})
+
+    dofs = _resolver_dofs(session, disciplinas)
+    resp = session.post(
+        f"{BASE_URL}{MODULOS['mensagem_selecionar']}",
+        data={"origem": "D", "discturma[]": dofs},
+        allow_redirects=True,
+    )
+    soup = _soup(resp.text)
+    alunos: list[dict] = []
+    vistos: set[str] = set()
+    for cb in soup.select("input[name='pessoas[]']"):
+        ra = (cb.get("value") or "").strip()
+        if not ra or ra in vistos:
+            continue
+        vistos.add(ra)
+        tr = cb.find_parent("tr")
+        texto = tr.get_text(" ", strip=True) if tr else ""
+        # formato: "453563 - Nome Completo email@x.com"
+        m = re.match(r"^(\d+)\s*-\s*(.+?)\s+(\S+@\S+)\s*$", texto)
+        if m:
+            nome, email = m.group(2).strip(), m.group(3).strip()
+        else:
+            partes = texto.split()
+            email = next((p for p in partes if "@" in p), "")
+            nome = texto
+            if email:
+                nome = texto.replace(email, "").strip(" -")
+            nome = re.sub(rf"^{ra}\s*-\s*", "", nome).strip()
+        # dof do onclick sendmailAddOferta(DOF)
+        dof = ""
+        onclick = cb.get("onclick") or ""
+        m_dof = re.search(r"sendmailAddOferta\((\d+)\)", onclick)
+        if m_dof:
+            dof = m_dof.group(1)
+        alunos.append({"ra": ra, "nome": nome, "email": email, "dof": dof or (dofs[0] if len(dofs) == 1 else "")})
+    return alunos
+
+
+def buscar_alunos_mensagem(
+    session: Session,
+    disciplinas: str | list[str],
+    termo: str,
+) -> list[dict]:
+    """Filtra alunos da turma por RA, nome ou e-mail (case-insensitive)."""
+    termo = termo.strip().lower()
+    return [
+        a for a in listar_alunos_para_mensagem(session, disciplinas)
+        if termo in a["ra"].lower()
+        or termo in a["nome"].lower()
+        or termo in a.get("email", "").lower()
+    ]
+
+
+def _remetente_padrao(html: str) -> str:
+    soup = _soup(html)
+    sel = soup.find("select", {"name": "remetente"})
+    if not sel:
+        return ""
+    selected = sel.find("option", selected=True) or sel.find("option")
+    return selected.get("value", "") if selected else ""
+
+
+def _enviar_mensagem_composta(
+    session: Session,
+    html_compose: str,
+    assunto: str,
+    mensagem: str,
+    remetente: str | None = None,
+) -> dict:
+    """Conclui o envio a partir da tela sendmail3 (sessão já com destinatários)."""
+    remetente = remetente or _remetente_padrao(html_compose)
+    if not remetente:
+        raise RuntimeError("Não foi possível obter o remetente na tela de composição.")
+    if not assunto or not mensagem or len(mensagem.strip()) <= 5:
+        raise ValueError("Assunto e mensagem (com mais de 5 caracteres) são obrigatórios.")
+
+    m = re.search(r"Adicionados\s+(\d+)\s+e-mails", html_compose, re.I)
+    n_dest = int(m.group(1)) if m else 0
+
+    resp = session.post(
+        f"{BASE_URL}{MODULOS['mensagem_compor']}",
+        data={
+            "action":    "enviar",
+            "origem":    "S",
+            "remetente": remetente,
+            "assunto":   assunto,
+            "mensagem":  mensagem,
+            "adicionais": "",
+        },
+        allow_redirects=True,
+    )
+    texto = _soup(resp.text).get_text(" ", strip=True)
+    ok = resp.status_code == 200 and not re.search(r"erro|falha|obrigat", texto, re.I)
+    # sucesso típico: volta para lista ou mensagem de confirmação
+    if "sendmail.jspa" in resp.url or "enviad" in texto.lower() or "sucesso" in texto.lower():
+        ok = True
+    return {
+        "sucesso":       ok,
+        "status_code":   resp.status_code,
+        "destinatarios": n_dest,
+        "url":           resp.url,
+        "mensagem":      texto[:300],
     }
-    resp = _post(session, "mensagem_alunos", data)
-    return resp.status_code == 200
 
 
-def enviar_notificacao_on(session: Session, mensagem: str, disciplinas: str | list[str]) -> bool:
+def enviar_mensagem_turmas(
+    session: Session,
+    disciplinas: str | list[str],
+    assunto: str,
+    mensagem: str,
+    remetente: str | None = None,
+) -> dict:
+    """Envia mensagem do portal para todos os alunos das turmas (DOF/nome)."""
+    dofs = _resolver_dofs(session, disciplinas)
+    resp = session.post(
+        f"{BASE_URL}{MODULOS['mensagem_compor']}",
+        data={"origem": "D", "discturma[]": dofs},
+        allow_redirects=True,
+    )
+    return _enviar_mensagem_composta(session, resp.text, assunto, mensagem, remetente)
+
+
+def enviar_mensagem_alunos(
+    session: Session,
+    alunos: str | list[str],
+    assunto: str,
+    mensagem: str,
+    disciplinas: str | list[str] | None = None,
+    remetente: str | None = None,
+) -> dict:
+    """Envia mensagem acadêmica do portal para alunos específicos (por RA).
+
+    Args:
+        alunos:       RA ou lista de RAs.
+        assunto:      assunto da mensagem.
+        mensagem:     corpo (HTML simples ou texto).
+        disciplinas:  DOF/nome das turmas onde buscar os RAs.
+                      Se omitido, tenta em todas as turmas do período.
+        remetente:    valor completo do select (opcional).
+
+    Returns:
+        dict com {sucesso, destinatarios, status_code, ...}
+    """
+    ras = set(_as_list(alunos))
+    if not ras:
+        raise ValueError("Informe ao menos um RA.")
+
+    if disciplinas is None:
+        turmas = listar_turmas_mensagem(session)
+        dofs = [t["dof"] for t in turmas if t.get("dof")]
+    else:
+        dofs = _resolver_dofs(session, disciplinas)
+
+    # 1) abre lista de alunos das turmas
+    resp2 = session.post(
+        f"{BASE_URL}{MODULOS['mensagem_selecionar']}",
+        data={"origem": "D", "discturma[]": dofs},
+        allow_redirects=True,
+    )
+    soup2 = _soup(resp2.text)
+    selecionados: list[str] = []
+    ofertas: list[str] = []
+    for cb in soup2.select("input[name='pessoas[]']"):
+        ra = (cb.get("value") or "").strip()
+        if ra not in ras:
+            continue
+        selecionados.append(ra)
+        m_dof = re.search(r"sendmailAddOferta\((\d+)\)", cb.get("onclick") or "")
+        if m_dof:
+            ofertas.append(m_dof.group(1))
+
+    if not selecionados:
+        raise ValueError(
+            f"Nenhum dos RAs {sorted(ras)} foi encontrado nas turmas informadas."
+        )
+
+    ofertas_str = "".join(f"{o};" for o in dict.fromkeys(ofertas))
+    resp3 = session.post(
+        f"{BASE_URL}{MODULOS['mensagem_compor']}",
+        data={
+            "origem":    "A",
+            "pessoas[]": selecionados,
+            "ofertas":   ofertas_str,
+        },
+        allow_redirects=True,
+    )
+    return _enviar_mensagem_composta(session, resp3.text, assunto, mensagem, remetente)
+
+
+def enviar_notificacao_on(
+    session: Session,
+    mensagem: str,
+    disciplinas: str | list[str],
+    titulo: str = "",
+    tipo: str = "INFORMACAO",
+) -> dict:
     """Envia notificação push via app Unoesc ON.
 
     Args:
         mensagem:    texto da notificação.
-        disciplinas: código DOF (str) ou lista de DOFs das disciplinas.
+        disciplinas: DOF ou nome/código (ou lista).
+        titulo:      título curto (opcional).
+        tipo:        INFORMACAO | ALERTA | ERRO | SUCESSO.
 
     Returns:
-        True se enviado com sucesso.
+        dict com {sucesso, mensagem, status_code, ...}
     """
-    data = {
-        "mensagem":        mensagem,
-        "disclecionada[]": disciplinas if isinstance(disciplinas, list) else [disciplinas],
+    dofs = _resolver_dofs(session, disciplinas)
+    # Carrega metadados do formulário (remetente, email, etc.)
+    resp = _get(session, "notificacao_on")
+    soup = _soup(resp.text)
+
+    def _val(name: str, default: str = "") -> str:
+        el = soup.find("input", {"name": name})
+        return el.get("value", default) if el else default
+
+    payload = {
+        "origem":         _val("origem", "PROFESSOR"),
+        "remetente":      _val("remetente"),
+        "remetenteEmail": _val("remetenteEmail"),
+        "titulo":         titulo or mensagem[:60],
+        "mensagem":       mensagem,
+        "tipo":           tipo,
+        "campus":         _val("campus"),
+        "curso":          _val("curso"),
+        "cursoNivel":     _val("cursoNivel"),
+        "perfil":         _val("perfil", "ESTUDANTE"),
+        "filtro":         _val("filtro", "1"),
+        "ofertas":        dofs,
     }
-    resp = _post(session, "notificacao_on", data)
-    return resp.status_code == 200
+    r = session.post(
+        f"{BASE_URL}{MODULOS['notificacao_on']}?action=sendNotification",
+        json=payload,
+        headers={"Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"},
+        allow_redirects=True,
+    )
+    msg = ""
+    try:
+        body = r.json()
+        msg = body.get("message") or str(body)
+    except Exception:
+        msg = r.text[:300]
+    return {
+        "sucesso":     r.status_code == 200,
+        "status_code": r.status_code,
+        "mensagem":    msg,
+        "ofertas":     dofs,
+    }
+
+
+def comunicar_estudantes(
+    session: Session,
+    disciplinas: str | list[str],
+    mensagem: str,
+    assunto: str | None = None,
+    alunos: str | list[str] | None = None,
+    canais: tuple[str, ...] = ("portal", "push"),
+    titulo_push: str = "",
+    tipo_push: str = "INFORMACAO",
+) -> dict:
+    """Envia aviso por mensagem do portal e/ou push Unoesc ON.
+
+    Args:
+        disciplinas: DOF ou nome da disciplina (ou lista).
+        mensagem:    texto do aviso.
+        assunto:     assunto da mensagem do portal (obrigatório se canal portal).
+        alunos:      se informado, mensagem do portal vai só para esses RAs.
+                     Push ON continua por disciplina (limitação do portal).
+        canais:      subset de ('portal', 'push').
+
+    Returns:
+        dict com resultados por canal.
+    """
+    resultado: dict = {"portal": None, "push": None}
+    if "portal" in canais:
+        if not assunto:
+            raise ValueError("Informe 'assunto' para o canal portal.")
+        if alunos:
+            resultado["portal"] = enviar_mensagem_alunos(
+                session, alunos=alunos, assunto=assunto, mensagem=mensagem,
+                disciplinas=disciplinas,
+            )
+        else:
+            resultado["portal"] = enviar_mensagem_turmas(
+                session, disciplinas=disciplinas, assunto=assunto, mensagem=mensagem,
+            )
+    if "push" in canais:
+        resultado["push"] = enviar_notificacao_on(
+            session, mensagem=mensagem, disciplinas=disciplinas,
+            titulo=titulo_push or (assunto or ""),
+            tipo=tipo_push,
+        )
+    return resultado
 
 
 # ── Ocorrências ───────────────────────────────────────────────────────────────

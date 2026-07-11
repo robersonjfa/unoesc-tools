@@ -68,6 +68,9 @@ As variáveis de ambiente têm prioridade. A sessão fica em `~/.unoesc_session.
 |---|---|
 | `listar_disciplinas` / `buscar_disciplina` | Disciplinas com `codigo`, `nome`, `dof` |
 | `listar_diarios` / `abrir_diario` | Diário de classe |
+| `listar_encontros` / `obter_presencas_encontro` | Encontros e lista de faltas |
+| `lancar_faltas` / `salvar_presencas_encontro` | Lançar faltas / conteúdo do encontro |
+| `adicionar_encontro` / `remover_encontro` / `definir_encontro_presencial` | Manutenção do quadro |
 | `listar_planos_ensino` | Planos de ensino |
 | `consultar_notas` | Notas consolidadas |
 | `lista_presenca` / `lista_estudantes_a2` | Listas A1 / recuperação |
