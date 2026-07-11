@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+.claude/
+
+# Debug / dumps
+_debug_*.html
+*.html.bak
+
+# Local secrets / session (never commit)
+.env
+.env.*
+*.pem
