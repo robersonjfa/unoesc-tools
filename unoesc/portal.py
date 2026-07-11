@@ -867,6 +867,630 @@ def analisar_plano_trilha(session: Session, dof: str, *, incluir_atividades: boo
     }
 
 
+def _detectar_padrao_plano(
+    plano: dict,
+    *,
+    padrao: str | None = None,
+    trilha: dict | None = None,
+) -> str:
+    """Resolve o template da trilha: ead_semanas | presencial_aulas."""
+    if padrao in ("ead_semanas", "presencial_aulas"):
+        return padrao
+    if trilha and trilha.get("padrao") in ("ead_semanas", "presencial_aulas"):
+        return trilha["padrao"]
+    disc = (plano.get("disciplina") or "").upper()
+    if "EAD" in disc:
+        return "ead_semanas"
+    # Heurística: muitos encontros datados → presencial
+    datados = [
+        c for c in plano.get("cronograma", [])
+        if c.get("data_inicio") and not c.get("autoestudo")
+        and c.get("data_inicio") == c.get("data_fim")
+    ]
+    if len(datados) >= 3:
+        return "presencial_aulas"
+    return "ead_semanas"
+
+
+def _inferir_semanas_por_unidade(trilha: dict | None, n_unidades: int) -> tuple[list[int], list[list[str]]] | tuple[None, None]:
+    """Infere semanas por unidade e nomes das seções já existentes.
+
+    Returns:
+        (contagens, nomes_por_unidade) ou (None, None).
+    """
+    if not trilha or n_unidades <= 0:
+        return None, None
+    secoes = trilha.get("secoes") or []
+    grupos: list[list[str]] = []
+    atual: list[str] = []
+    contando = False
+    for s in secoes:
+        papel = s.get("papel")
+        if papel == "unidade":
+            if contando:
+                grupos.append(atual)
+            contando = True
+            atual = []
+        elif papel == "semana" and contando:
+            atual.append(s.get("nome") or "")
+        elif papel in ("avaliacao", "apoio", "forum") and contando:
+            grupos.append(atual)
+            contando = False
+            atual = []
+    if contando:
+        grupos.append(atual)
+    if len(grupos) == n_unidades and all(len(g) > 0 for g in grupos):
+        return [len(g) for g in grupos], grupos
+    n_sem = sum(1 for s in secoes if s.get("papel") == "semana")
+    if n_sem > 0 and n_unidades > 0:
+        base, resto = divmod(n_sem, n_unidades)
+        if base > 0:
+            contagens = [base + (1 if i < resto else 0) for i in range(n_unidades)]
+            return contagens, None
+    return None, None
+
+
+def _formato_aula_existente(trilha: dict | None) -> str:
+    """Retorna 'numerada' se o curso usa 'Aula N - data', senão 'simples'."""
+    if not trilha:
+        return "simples"
+    for s in trilha.get("secoes") or []:
+        if re.search(r"(?i)^aula\s+\d+\s*-", s.get("nome") or ""):
+            return "numerada"
+    return "simples"
+
+
+def _heuristica_tipo_atividade(texto: str) -> str | None:
+    """Sugere tipo Moodle a partir do texto do plano. None = sem sugestão clara."""
+    t = (texto or "").lower()
+    if not t.strip():
+        return None
+    if re.search(r"\b(prova|question[aá]rio|quiz|objetiva)\b", t):
+        return "quiz"
+    if re.search(r"\b(f[oó]rum|discuss[aã]o)\b", t):
+        return "hsuforum"
+    if re.search(r"\b(webconfer[eê]ncia|webconf|url|link|http)\b", t):
+        return "url"
+    if re.search(r"\b(pasta|materiais?|material de apoio)\b", t):
+        return "folder"
+    if re.search(r"\b(tarefa|atividade avaliativa|trabalho|mvp|entrega)\b", t):
+        return "assign"
+    return None
+
+
+def planejar_secoes_do_plano(
+    plano: dict,
+    *,
+    padrao: str | None = None,
+    semanas_por_unidade: list[int] | None = None,
+    trilha: dict | None = None,
+) -> list[dict]:
+    """Monta a lista desejada de seções Moodle a partir do plano (sem HTTP).
+
+    Args:
+        plano: retorno de ``obter_plano_ensino``.
+        padrao: ``ead_semanas`` | ``presencial_aulas`` | None (auto).
+        semanas_por_unidade: obrigatório no EAD se a trilha atual não permitir
+            inferir (ex. ``[2, 3]`` = 2 semanas na U1 e 3 na U2).
+        trilha: estrutura atual (``obter_estrutura_curso``) para inferir formato.
+
+    Returns:
+        list[dict]: [{nome, papel, data, unidade_ordem, semana_rotulo,
+                      fonte, conteudo, atividade, ordem_cronograma}]
+    """
+    padrao = _detectar_padrao_plano(plano, padrao=padrao, trilha=trilha)
+    secoes: list[dict] = []
+
+    def add(nome, papel, **extra):
+        item = {
+            "nome": nome,
+            "papel": papel,
+            "data": extra.get("data"),
+            "unidade_ordem": extra.get("unidade_ordem"),
+            "semana_rotulo": extra.get("semana_rotulo"),
+            "fonte": extra.get("fonte", "template"),
+            "conteudo": extra.get("conteudo"),
+            "atividade": extra.get("atividade"),
+            "ordem_cronograma": extra.get("ordem_cronograma"),
+        }
+        secoes.append(item)
+
+    add("Apresentação", "apresentacao")
+
+    if padrao == "presencial_aulas":
+        add("Plano de Ensino", "plano")
+        add("Material Didático", "material")
+        fmt = _formato_aula_existente(trilha)
+        aula_n = 0
+        for c in plano.get("cronograma") or []:
+            if c.get("autoestudo"):
+                continue
+            data = c.get("data_inicio")
+            # só encontros de um dia (não intervalos longos de autoestudo)
+            if not data or c.get("data_inicio") != c.get("data_fim"):
+                # intervalo multiperíodo → seção não presencial opcional
+                if data and c.get("data_fim") and c.get("data_inicio") != c.get("data_fim"):
+                    tipo = (c.get("tipo") or "").lower()
+                    if "não presencial" in tipo or "nao presencial" in tipo:
+                        continue  # conteúdo embutido nas aulas; não gera seção
+                continue
+            aula_n += 1
+            if fmt == "numerada":
+                nome = f"Aula {aula_n} - {data}"
+            else:
+                nome = f"Aula - {data}"
+            add(
+                nome, "aula",
+                data=data,
+                fonte="cronograma",
+                conteudo=c.get("conteudo"),
+                atividade=c.get("atividade"),
+                ordem_cronograma=c.get("ordem"),
+            )
+        # Avaliações
+        tem_a2 = any(
+            (a.get("tipo") or "").upper() == "A2" or "exame" in (a.get("nome") or "").lower()
+            for a in (plano.get("avaliacoes") or [])
+        )
+        if tem_a2 or any("exame" in (c.get("conteudo") or "").lower() for c in plano.get("cronograma") or []):
+            add("Exame Final | A2", "avaliacao", fonte="avaliacoes")
+        else:
+            add("Avaliações", "avaliacao", fonte="avaliacoes")
+
+    else:  # ead_semanas
+        unidades = plano.get("unidades") or []
+        n_u = len(unidades)
+        nomes_inferidos = None
+        semanas = semanas_por_unidade
+        if semanas is None:
+            semanas, nomes_inferidos = _inferir_semanas_por_unidade(trilha, n_u)
+        if n_u == 0:
+            raise ValueError(
+                "Plano EAD sem unidades cadastradas; não é possível montar a trilha."
+            )
+        if not semanas or len(semanas) != n_u:
+            raise ValueError(
+                "Para EAD informe semanas_por_unidade (ex. [2, 3]) ou use um curso "
+                "Moodle que já tenha seções Semana sob cada Unidade para inferir."
+            )
+        # Preferir nomes de unidade já existentes na trilha
+        unidades_exist = [
+            s.get("nome") for s in (trilha or {}).get("secoes") or []
+            if s.get("papel") == "unidade"
+        ]
+        crono = [
+            c for c in (plano.get("cronograma") or [])
+            if not c.get("autoestudo")
+        ]
+        encontros = [
+            c for c in crono
+            if "presencial" in (c.get("tipo") or "").lower()
+            and c.get("data_inicio") == c.get("data_fim")
+        ]
+        semana_global = 1
+        for i, u in enumerate(unidades):
+            ordem_u = u.get("ordem", i + 1)
+            nome_u = (u.get("nome") or f"Unidade {ordem_u}").strip()
+            if i < len(unidades_exist) and unidades_exist[i]:
+                nome_secao_u = unidades_exist[i]
+            else:
+                nome_secao_u = f"UNIDADE {ordem_u} | {nome_u.upper()}"
+            add(
+                nome_secao_u,
+                "unidade",
+                unidade_ordem=ordem_u,
+                fonte="unidades",
+                conteudo=u.get("descricao"),
+            )
+            n_sem = semanas[i]
+            labels = None
+            if nomes_inferidos and i < len(nomes_inferidos):
+                labels = nomes_inferidos[i]
+            for j in range(n_sem):
+                if labels and j < len(labels) and labels[j]:
+                    rotulo = labels[j]
+                else:
+                    rotulo = f"Semana {semana_global}"
+                c_ref = encontros[min(i, len(encontros) - 1)] if encontros else (crono[0] if crono else None)
+                add(
+                    rotulo, "semana",
+                    unidade_ordem=ordem_u,
+                    semana_rotulo=rotulo,
+                    fonte="semanas_por_unidade",
+                    conteudo=(c_ref or {}).get("conteudo"),
+                    atividade=(c_ref or {}).get("atividade"),
+                    ordem_cronograma=(c_ref or {}).get("ordem"),
+                    data=(c_ref or {}).get("data_inicio") if j == 0 and c_ref and c_ref.get("data_inicio") == c_ref.get("data_fim") else None,
+                )
+                semana_global += 1
+
+        add("Exame Final | A2", "avaliacao", fonte="avaliacoes")
+        add("APOIO PEDAGÓGICO", "apoio", fonte="template")
+        add("Tira-dúvidas", "forum", fonte="template")
+        add("Tutoriais", "apoio", fonte="template")
+
+    return secoes
+
+
+def planejar_atividades_do_plano(
+    plano: dict,
+    secoes_planejadas: list[dict],
+    *,
+    padrao: str | None = None,
+) -> list[dict]:
+    """Sugere atividades Moodle a partir do plano e das seções planejadas.
+
+    Não inclui LTI. Tipos: assign, quiz, hsuforum, folder, url.
+
+    Returns:
+        list[dict]: [{secao_nome, tipo, nome, intro, fonte, ordem_cronograma}]
+    """
+    padrao = padrao or _detectar_padrao_plano(plano)
+    atividades: list[dict] = []
+
+    # Fórum de apresentação
+    for s in secoes_planejadas:
+        if s["papel"] == "apresentacao":
+            atividades.append({
+                "secao_nome": s["nome"],
+                "tipo": "hsuforum",
+                "nome": "Fórum de apresentação",
+                "intro": "Apresente-se à turma.",
+                "fonte": "template",
+                "ordem_cronograma": None,
+            })
+            break
+
+    # Material didático: pasta
+    for s in secoes_planejadas:
+        if s["papel"] == "material":
+            atividades.append({
+                "secao_nome": s["nome"],
+                "tipo": "folder",
+                "nome": "Material Didático",
+                "intro": "Arquivos de apoio da disciplina.",
+                "fonte": "template",
+                "ordem_cronograma": None,
+            })
+            break
+
+    # Por seção de aula/semana: heurística no texto
+    for s in secoes_planejadas:
+        if s["papel"] not in ("aula", "semana"):
+            continue
+        texto = " ".join(filter(None, [s.get("atividade"), s.get("conteudo")]))
+        tipo = _heuristica_tipo_atividade(texto)
+        if not tipo:
+            # padrão suave: pasta de material da aula
+            tipo = "folder"
+            nome = f"Material — {s['nome']}"
+        else:
+            if tipo == "quiz":
+                nome = f"Questionário — {s['nome']}"
+            elif tipo == "assign":
+                nome = f"Atividade — {s['nome']}"
+            elif tipo == "hsuforum":
+                nome = f"Fórum — {s['nome']}"
+            elif tipo == "url":
+                nome = f"Webconferência — {s['nome']}"
+            else:
+                nome = f"Material — {s['nome']}"
+        atividades.append({
+            "secao_nome": s["nome"],
+            "tipo": tipo,
+            "nome": nome[:200],
+            "intro": (s.get("conteudo") or "")[:2000],
+            "fonte": "cronograma" if s.get("ordem_cronograma") else "heuristica",
+            "ordem_cronograma": s.get("ordem_cronograma"),
+        })
+
+    # Avaliações do plano → assign/quiz
+    for a in plano.get("avaliacoes") or []:
+        secao_aval = next((s for s in secoes_planejadas if s["papel"] == "avaliacao"), None)
+        if not secao_aval:
+            continue
+        desc = (a.get("descritivo") or "") + " " + (a.get("nome") or "")
+        tipo = _heuristica_tipo_atividade(desc) or "assign"
+        if tipo == "url":
+            tipo = "assign"
+        atividades.append({
+            "secao_nome": secao_aval["nome"],
+            "tipo": tipo,
+            "nome": a.get("nome") or a.get("tipo") or "Avaliação",
+            "intro": a.get("descritivo") or "",
+            "fonte": "avaliacoes",
+            "ordem_cronograma": None,
+        })
+
+    # Fórum tira-dúvidas
+    for s in secoes_planejadas:
+        if s["papel"] == "forum" or "tira" in s["nome"].lower():
+            atividades.append({
+                "secao_nome": s["nome"],
+                "tipo": "hsuforum",
+                "nome": "Tira-dúvidas",
+                "intro": "Canal para dúvidas da disciplina.",
+                "fonte": "template",
+                "ordem_cronograma": None,
+            })
+            break
+
+    return atividades
+
+
+def _match_secao_planejada(desejada: dict, existentes: list[dict]) -> dict | None:
+    """Encontra seção Moodle correspondente à planejada."""
+    nome_d = (desejada.get("nome") or "").strip().lower()
+    data_d = desejada.get("data")
+    for s in existentes:
+        if data_d and s.get("data") == data_d and desejada.get("papel") == "aula":
+            return s
+        nome_e = (s.get("nome") or "").strip().lower()
+        if nome_e == nome_d:
+            return s
+        # match parcial para unidade/semana
+        if desejada.get("papel") in ("unidade", "semana", "avaliacao", "apresentacao", "plano", "material", "apoio", "forum"):
+            if nome_d and (nome_d in nome_e or nome_e in nome_d):
+                return s
+    return None
+
+
+def planejar_sincronizacao_trilha(
+    session: Session,
+    dof: str,
+    *,
+    incluir_atividades: bool = False,
+    padrao: str | None = None,
+    semanas_por_unidade: list[int] | None = None,
+) -> dict:
+    """Calcula o diff plano × Moodle sem alterar nada.
+
+    Returns:
+        dict com padrao, secoes_planejadas, secoes_criar, secoes_atualizar,
+        secoes_ignorar, atividades_planejadas, atividades_criar, atividades_ignorar,
+        plano, trilha.
+    """
+    from . import moodle as moodle_mod
+
+    plano = obter_plano_ensino(session, dof)
+    ms, course_id = moodle_mod.abrir_curso(session, dof)
+    trilha = moodle_mod.obter_estrutura_curso(
+        ms, course_id, incluir_atividades=incluir_atividades
+    )
+
+    padrao_res = _detectar_padrao_plano(plano, padrao=padrao, trilha=trilha)
+    secoes_planejadas = planejar_secoes_do_plano(
+        plano,
+        padrao=padrao_res,
+        semanas_por_unidade=semanas_por_unidade,
+        trilha=trilha,
+    )
+
+    existentes = trilha.get("secoes") or []
+    criar, atualizar, ignorar = [], [], []
+    for desejada in secoes_planejadas:
+        match = _match_secao_planejada(desejada, existentes)
+        if not match:
+            criar.append({**desejada, "acao": "criar"})
+        elif (match.get("nome") or "").strip() != (desejada.get("nome") or "").strip():
+            atualizar.append({
+                **desejada,
+                "acao": "atualizar",
+                "section_id": match.get("section_id"),
+                "nome_atual": match.get("nome"),
+            })
+            ignorar.append({  # já existe; rename é opcional no sync
+                **desejada,
+                "acao": "existe",
+                "section_id": match.get("section_id"),
+                "nome_atual": match.get("nome"),
+            })
+        else:
+            ignorar.append({
+                **desejada,
+                "acao": "ignorar",
+                "section_id": match.get("section_id"),
+                "nome_atual": match.get("nome"),
+            })
+
+    atividades_planejadas = planejar_atividades_do_plano(
+        plano, secoes_planejadas, padrao=padrao_res
+    ) if incluir_atividades else []
+
+    # index atividades existentes por seção
+    ativ_por_secao: dict[str, list] = {}
+    for s in existentes:
+        ativ_por_secao[s.get("nome", "")] = s.get("atividades") or []
+
+    ativ_criar, ativ_ignorar = [], []
+    for a in atividades_planejadas:
+        # resolve seção destino (nome planejado ou match)
+        secao_match = _match_secao_planejada(
+            {"nome": a["secao_nome"], "papel": "outro", "data": None},
+            existentes,
+        )
+        existentes_ativ = []
+        if secao_match:
+            existentes_ativ = secao_match.get("atividades") or ativ_por_secao.get(secao_match.get("nome", ""), [])
+        nome_l = (a.get("nome") or "").lower()
+        found = None
+        for ea in existentes_ativ:
+            if nome_l and nome_l in (ea.get("nome") or "").lower():
+                found = ea
+                break
+            if a.get("tipo") and ea.get("tipo") == a["tipo"] and nome_l[:20] in (ea.get("nome") or "").lower():
+                found = ea
+                break
+        if found:
+            ativ_ignorar.append({**a, "acao": "ignorar", "activity_id": found.get("activity_id")})
+        else:
+            ativ_criar.append({
+                **a,
+                "acao": "criar",
+                "section_id": secao_match.get("section_id") if secao_match else None,
+                "section_num": None,  # preenchido no sync
+            })
+
+    return {
+        "dof": str(dof),
+        "course_id": course_id,
+        "padrao": padrao_res,
+        "plano": plano,
+        "trilha": trilha,
+        "secoes_planejadas": secoes_planejadas,
+        "secoes_criar": criar,
+        "secoes_atualizar": atualizar,
+        "secoes_ignorar": [x for x in ignorar if x.get("acao") == "ignorar"],
+        "atividades_planejadas": atividades_planejadas,
+        "atividades_criar": ativ_criar,
+        "atividades_ignorar": ativ_ignorar,
+    }
+
+
+def sincronizar_trilha_do_plano(
+    session: Session,
+    dof: str,
+    *,
+    criar_secoes: bool = True,
+    criar_atividades: bool = False,
+    atualizar_nomes: bool = False,
+    padrao: str | None = None,
+    semanas_por_unidade: list[int] | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Sincroniza a trilha Moodle com o plano (nunca apaga conteúdo).
+
+    Por padrão só simula (``dry_run=True``). Atividades só são criadas se
+    ``criar_atividades=True``.
+    """
+    from . import moodle as moodle_mod
+
+    plano_sync = planejar_sincronizacao_trilha(
+        session,
+        dof,
+        incluir_atividades=criar_atividades,
+        padrao=padrao,
+        semanas_por_unidade=semanas_por_unidade,
+    )
+    course_id = plano_sync["course_id"]
+    detalhes: list[dict] = []
+    criados_s, atualizados_s, criados_a = [], [], []
+
+    if dry_run:
+        if criar_secoes:
+            for s in plano_sync["secoes_criar"]:
+                detalhes.append({"tipo": "secao", "acao": "criar", "dry_run": True, **s})
+                criados_s.append(s)
+            if atualizar_nomes:
+                for s in plano_sync["secoes_atualizar"]:
+                    detalhes.append({"tipo": "secao", "acao": "atualizar", "dry_run": True, **s})
+                    atualizados_s.append(s)
+        if criar_atividades:
+            for a in plano_sync["atividades_criar"]:
+                detalhes.append({"tipo": "atividade", "acao": "criar", "dry_run": True, **a})
+                criados_a.append(a)
+        return {
+            "sucesso": True,
+            "dry_run": True,
+            "padrao": plano_sync["padrao"],
+            "course_id": course_id,
+            "criados": criados_s,
+            "atualizados": atualizados_s,
+            "atividades_criadas": criados_a,
+            "ignorados": {
+                "secoes": plano_sync["secoes_ignorar"],
+                "atividades": plano_sync["atividades_ignorar"],
+            },
+            "detalhes": detalhes,
+            "erros": [],
+        }
+
+    # Escrita real
+    erros: list[str] = []
+    ms, _ = moodle_mod.abrir_curso(session, dof)
+
+    if criar_secoes:
+        for s in plano_sync["secoes_criar"]:
+            try:
+                r = moodle_mod.criar_secao(ms, course_id, s["nome"], dry_run=False)
+                detalhes.append({"tipo": "secao", **r, "planejado": s})
+                if r.get("sucesso"):
+                    criados_s.append(r)
+                else:
+                    erros.append(r.get("mensagem") or f"Falha ao criar seção {s['nome']}")
+            except Exception as exc:  # noqa: BLE001
+                erros.append(f"criar_secao({s['nome']}): {exc}")
+        if atualizar_nomes:
+            for s in plano_sync["secoes_atualizar"]:
+                try:
+                    r = moodle_mod.atualizar_secao(
+                        ms, s["section_id"], nome=s["nome"], dry_run=False
+                    )
+                    detalhes.append({"tipo": "secao", **r, "planejado": s})
+                    if r.get("sucesso"):
+                        atualizados_s.append(r)
+                    else:
+                        erros.append(r.get("mensagem") or f"Falha ao atualizar {s['nome']}")
+                except Exception as exc:  # noqa: BLE001
+                    erros.append(f"atualizar_secao({s.get('section_id')}): {exc}")
+
+    if criar_atividades:
+        # Relê estrutura para mapear section_num
+        trilha = moodle_mod.obter_estrutura_curso(ms, course_id, incluir_atividades=True)
+        nome_para_num = {
+            s["nome"]: idx for idx, s in enumerate(trilha["secoes"])
+        }
+        # também por match parcial
+        for a in plano_sync["atividades_criar"]:
+            section_num = None
+            sid = a.get("section_id")
+            for idx, s in enumerate(trilha["secoes"]):
+                if sid and s.get("section_id") == sid:
+                    section_num = idx
+                    break
+                if (a["secao_nome"] or "").lower() in (s.get("nome") or "").lower():
+                    section_num = idx
+                    break
+            if section_num is None:
+                section_num = nome_para_num.get(a["secao_nome"])
+            if section_num is None:
+                erros.append(f"Seção destino não encontrada para atividade {a['nome']}")
+                continue
+            try:
+                r = moodle_mod.criar_atividade(
+                    ms,
+                    course_id,
+                    section_num,
+                    a["tipo"],
+                    a["nome"],
+                    intro=a.get("intro"),
+                    dry_run=False,
+                )
+                detalhes.append({"tipo": "atividade", **r, "planejado": a})
+                if r.get("sucesso"):
+                    criados_a.append(r)
+                else:
+                    erros.append(r.get("mensagem") or f"Falha ao criar {a['nome']}")
+            except Exception as exc:  # noqa: BLE001
+                erros.append(f"criar_atividade({a['nome']}): {exc}")
+
+    return {
+        "sucesso": len(erros) == 0,
+        "dry_run": False,
+        "padrao": plano_sync["padrao"],
+        "course_id": course_id,
+        "criados": criados_s,
+        "atualizados": atualizados_s,
+        "atividades_criadas": criados_a,
+        "ignorados": {
+            "secoes": plano_sync["secoes_ignorar"],
+            "atividades": plano_sync["atividades_ignorar"],
+        },
+        "detalhes": detalhes,
+        "erros": erros,
+    }
+
+
 # ── Avaliações e Notas ────────────────────────────────────────────────────────
 
 def consultar_notas(session: Session, ano_periodo: str | None = None) -> list[dict]:

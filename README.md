@@ -75,6 +75,8 @@ As variáveis de ambiente têm prioridade. A sessão fica em `~/.unoesc_session.
 | `listar_cronograma_plano` / `listar_unidades_plano` | Cronograma e unidades |
 | `listar_bibliografias_plano` / `listar_avaliacoes_plano` | Bibliografia e avaliações do plano |
 | `analisar_plano_trilha` | Diff read-only plano × Moodle |
+| `planejar_sincronizacao_trilha` / `sincronizar_trilha_do_plano` | Preview e sync da trilha (`dry_run=True` por padrão) |
+| `criar_secao` / `atualizar_secao` / `criar_atividade` | Escrita Moodle (nunca apaga; `dry_run=True` padrão) |
 | `obter_estrutura_curso` / `classificar_secao` | Estrutura da trilha no Moodle |
 | `consultar_notas` | Notas consolidadas |
 | `lista_presenca` / `lista_estudantes_a2` | Listas A1 / recuperação |
