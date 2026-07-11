@@ -158,6 +158,112 @@ def listar_atividades(session: Session, section_id: str) -> list[dict]:
     return result
 
 
+def classificar_secao(nome: str) -> str:
+    """Classifica o papel típico de uma seção da trilha pelo nome.
+
+    Returns:
+        Um de: ``apresentacao``, ``plano``, ``unidade``, ``semana``,
+        ``aula``, ``material``, ``avaliacao``, ``apoio``, ``forum``,
+        ``outro``.
+    """
+    n = (nome or "").strip()
+    low = n.lower()
+    if re.search(r"apresenta|boas.?vindas|in[ií]cio", low):
+        return "apresentacao"
+    if re.search(r"plano\s*de\s*ensino|cronograma", low):
+        return "plano"
+    if re.search(r"^unidade\b|unidade\s*\d+", low):
+        return "unidade"
+    if re.search(r"^semana\s*\d+", low):
+        return "semana"
+    if re.search(r"^aula\b", low) or re.search(r"aula\s*-?\s*\d{1,2}/\d{1,2}", low):
+        return "aula"
+    if re.search(r"material\s*did", low):
+        return "material"
+    if re.search(r"avalia|exame\s*\|\s*a2|\ba2\b|exame\s*final", low):
+        return "avaliacao"
+    if re.search(r"apoio|tutorial", low):
+        return "apoio"
+    if re.search(r"tira.?d[uú]vida|f[oó]rum", low):
+        return "forum"
+    return "outro"
+
+
+def _extrair_data_secao(nome: str) -> str | None:
+    """Extrai a primeira data dd/mm/yyyy (ou dd/mm/yy) do nome da seção."""
+    m = re.search(r"(\d{1,2}/\d{1,2}/\d{2,4})", nome or "")
+    if not m:
+        return None
+    d, mo, y = m.group(1).split("/")
+    if len(y) == 2:
+        y = "20" + y
+    return f"{int(d):02d}/{int(mo):02d}/{y}"
+
+
+def obter_estrutura_curso(
+    session: Session,
+    course_id: str,
+    *,
+    incluir_atividades: bool = False,
+) -> dict:
+    """Lê a estrutura atual da trilha no Moodle (somente leitura).
+
+    Args:
+        course_id: ID do curso Moodle.
+        incluir_atividades: se True, busca atividades de cada seção.
+
+    Returns:
+        dict: {
+          course_id, n_secoes, padrao, padroes,
+          secoes: [{nome, section_id, url, papel, data, atividades?}]
+        }
+
+        ``padrao`` resume o modelo dominante: ``ead_semanas``,
+        ``presencial_aulas`` ou ``misto``.
+    """
+    from collections import Counter
+
+    secoes_raw = listar_secoes(session, course_id)
+    secoes = []
+    for s in secoes_raw:
+        papel = classificar_secao(s["nome"])
+        item = {
+            "nome": s["nome"],
+            "section_id": s["section_id"],
+            "url": s["url"],
+            "papel": papel,
+            "data": _extrair_data_secao(s["nome"]),
+        }
+        if incluir_atividades:
+            try:
+                acts = listar_atividades(session, s["section_id"])
+            except Exception as exc:  # noqa: BLE001 - leitura best-effort
+                acts = []
+                item["atividades_erro"] = str(exc)
+            item["atividades"] = acts
+            item["n_atividades"] = len(acts)
+            item["tipos_atividades"] = dict(Counter(a["tipo"] for a in acts))
+        secoes.append(item)
+
+    contagem = Counter(s["papel"] for s in secoes)
+    if contagem.get("semana", 0) >= 2 and contagem.get("semana", 0) >= contagem.get("aula", 0):
+        padrao = "ead_semanas"
+    elif contagem.get("aula", 0) >= 2:
+        padrao = "presencial_aulas"
+    elif contagem.get("semana", 0) and contagem.get("aula", 0):
+        padrao = "misto"
+    else:
+        padrao = "misto" if len(secoes) else "vazio"
+
+    return {
+        "course_id": course_id,
+        "n_secoes": len(secoes),
+        "padrao": padrao,
+        "padroes": dict(contagem),
+        "secoes": secoes,
+    }
+
+
 # ── Tarefas (assign) ──────────────────────────────────────────────────────────
 
 def ver_tarefa(session: Session, activity_id: str) -> dict:

@@ -71,7 +71,11 @@ As variáveis de ambiente têm prioridade. A sessão fica em `~/.unoesc_session.
 | `listar_encontros` / `obter_presencas_encontro` | Encontros e lista de faltas |
 | `lancar_faltas` / `salvar_presencas_encontro` | Lançar faltas / conteúdo do encontro |
 | `adicionar_encontro` / `remover_encontro` / `definir_encontro_presencial` | Manutenção do quadro |
-| `listar_planos_ensino` | Planos de ensino |
+| `listar_planos_ensino` / `obter_plano_ensino` | Plano de ensino (leitura) |
+| `listar_cronograma_plano` / `listar_unidades_plano` | Cronograma e unidades |
+| `listar_bibliografias_plano` / `listar_avaliacoes_plano` | Bibliografia e avaliações do plano |
+| `analisar_plano_trilha` | Diff read-only plano × Moodle |
+| `obter_estrutura_curso` / `classificar_secao` | Estrutura da trilha no Moodle |
 | `consultar_notas` | Notas consolidadas |
 | `lista_presenca` / `lista_estudantes_a2` | Listas A1 / recuperação |
 | `listar_alunos_para_mensagem` / `enviar_mensagem_alunos` | Mensagem acadêmica |

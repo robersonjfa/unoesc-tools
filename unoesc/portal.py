@@ -563,14 +563,308 @@ def lancar_faltas(
 # ── Plano de Ensino ───────────────────────────────────────────────────────────
 
 def listar_planos_ensino(session: Session, ano_periodo: str | None = None) -> list[dict]:
-    """Lista planos de ensino disponíveis para preenchimento.
+    """Lista planos de ensino do professor no período.
+
+    Args:
+        ano_periodo: ex. ``"2026/2"``. None = período atual do portal.
 
     Returns:
-        list[dict] com as disciplinas e status do plano.
+        list[dict]: [{dof, codigo, nome, fase, turma, situacao, observacao}]
     """
-    params = {"selAnoPeriodo": ano_periodo} if ano_periodo else None
-    resp = _get(session, "plano_ensino", params)
-    return _tabela(_soup(resp.text))
+    data = {"submit": "Consultar"}
+    if ano_periodo:
+        data["selAnoPeriodo"] = ano_periodo
+    resp = _post(session, "plano_ensino", data)
+    soup = _soup(resp.text)
+    result = []
+    for tr in soup.find_all("tr"):
+        link = tr.find("a", href=re.compile(r"editPlanoEnsino\.jspa\?dof=(\d+)"))
+        if not link:
+            continue
+        m = re.search(r"dof=(\d+)", link.get("href", ""))
+        if not m:
+            continue
+        cells = [re.sub(r"\s+", " ", td.get_text()).strip() for td in tr.find_all("td")]
+        componente = cells[0] if cells else ""
+        partes = componente.split(" - ", 1)
+        result.append({
+            "dof":         m.group(1),
+            "codigo":      partes[0].strip(),
+            "nome":        partes[1].strip() if len(partes) > 1 else componente,
+            "fase":        cells[1] if len(cells) > 1 else "",
+            "turma":       cells[2] if len(cells) > 2 else "",
+            "situacao":    cells[7] if len(cells) > 7 else "",
+            "observacao":  cells[8] if len(cells) > 8 else "",
+        })
+    return result
+
+
+def _campo_plano(soup, name: str) -> str:
+    el = soup.find(attrs={"name": name}) or soup.find(id=name)
+    if not el:
+        return ""
+    if el.name == "textarea":
+        return el.get_text()
+    return el.get("value", "") or ""
+
+
+def _parse_data_cronograma(dia: str) -> dict:
+    """Extrai datas/horários de strings do cronograma do plano."""
+    dia = (dia or "").strip()
+    out = {
+        "dia_raw": dia,
+        "data_inicio": None,
+        "data_fim": None,
+        "hora_inicio": None,
+        "hora_fim": None,
+        "autoestudo": False,
+    }
+    if not dia or dia == "-":
+        return out
+    if re.search(r"autoestudo", dia, re.I):
+        out["autoestudo"] = True
+        return out
+    # 05/10/2026 - 13/12/2026  |  14/10/2026 19:00 - 21:00  |  28/07/2026 19:00 - 20:30
+    m_range = re.match(
+        r"^(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})$", dia
+    )
+    if m_range:
+        out["data_inicio"], out["data_fim"] = m_range.group(1), m_range.group(2)
+        return out
+    m_hora = re.match(
+        r"^(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})$", dia
+    )
+    if m_hora:
+        out["data_inicio"] = m_hora.group(1)
+        out["data_fim"] = m_hora.group(1)
+        out["hora_inicio"] = m_hora.group(2)
+        out["hora_fim"] = m_hora.group(3)
+        return out
+    m_data = re.match(r"^(\d{2}/\d{2}/\d{4})", dia)
+    if m_data:
+        out["data_inicio"] = m_data.group(1)
+        out["data_fim"] = m_data.group(1)
+    return out
+
+
+def listar_cronograma_plano(session: Session, dof: str) -> list[dict]:
+    """Lista o cronograma (encontros) do plano de ensino.
+
+    Fonte: ``editPlanoEnsinoCronograma.jspa?action=getCronograma`` (somente leitura).
+
+    Returns:
+        list[dict]: [{ordem, dia, dia_semana, tipo, conteudo, atividade,
+                      data_inicio, data_fim, hora_inicio, hora_fim, autoestudo}]
+    """
+    resp = session.post(
+        f"{BASE_URL}/portal/modules/prof/editPlanoEnsinoCronograma.jspa",
+        data={"action": "getCronograma", "dof": dof},
+    )
+    soup = _soup(resp.text)
+    itens = []
+    for tr in soup.find_all("tr"):
+        tds = tr.find_all("td")
+        if len(tds) < 6:
+            continue
+        ordem_txt = re.sub(r"\s+", " ", tds[0].get_text()).strip()
+        m_ord = re.search(r"\d+", ordem_txt)
+        if not m_ord:
+            continue
+        # conteúdo pode ter <br/>
+        conteudo = tds[4].get_text("\n", strip=True)
+        atividade = tds[5].get_text("\n", strip=True)
+        dia = re.sub(r"\s+", " ", tds[1].get_text()).strip()
+        item = {
+            "ordem":      int(m_ord.group(0)),
+            "dia":        dia,
+            "dia_semana": re.sub(r"\s+", " ", tds[2].get_text()).strip(),
+            "tipo":       re.sub(r"\s+", " ", tds[3].get_text()).strip(),
+            "conteudo":   conteudo,
+            "atividade":  atividade,
+        }
+        item.update(_parse_data_cronograma(dia))
+        itens.append(item)
+    return itens
+
+
+def listar_unidades_plano(session: Session, dof: str) -> list[dict]:
+    """Lista unidades de ensino do plano.
+
+    Returns:
+        list[dict]: [{ordem, nome, descricao}]
+    """
+    resp = session.post(
+        f"{BASE_URL}/portal/modules/prof/planoEnsinoUnidadeEnsinoList.jspa",
+        data={"action": "getUnidadesDeEnsino", "dof": dof},
+    )
+    soup = _soup(resp.text)
+    itens = []
+    for tr in soup.find_all("tr"):
+        tds = tr.find_all("td")
+        if len(tds) < 3:
+            continue
+        ordem = re.sub(r"\s+", " ", tds[0].get_text()).strip()
+        if not ordem.isdigit():
+            continue
+        itens.append({
+            "ordem":     int(ordem),
+            "nome":      re.sub(r"\s+", " ", tds[1].get_text()).strip(),
+            "descricao": tds[2].get_text("\n", strip=True),
+        })
+    return itens
+
+
+def listar_bibliografias_plano(session: Session, dof: str) -> list[dict]:
+    """Lista bibliografias (básica/complementar) do plano.
+
+    Returns:
+        list[dict]: [{referencia, tipo}]
+          - tipo: ``"Básica"`` ou ``"Complementar"``
+    """
+    resp = session.post(
+        f"{BASE_URL}/portal/modules/prof/editPlanoEnsinoBibliografia.jspa",
+        data={"action": "getBibliografias", "dof": dof},
+    )
+    soup = _soup(resp.text)
+    itens = []
+    for tr in soup.find_all("tr"):
+        tds = tr.find_all("td")
+        if len(tds) < 2:
+            continue
+        referencia = re.sub(r"\s+", " ", tds[0].get_text()).strip()
+        tipo = re.sub(r"\s+", " ", tds[1].get_text()).strip()
+        if not referencia or referencia.lower().startswith("referência"):
+            continue
+        if tipo.lower() not in ("básica", "basica", "complementar"):
+            # evita linhas de metadados
+            if "básic" not in tipo.lower() and "complement" not in tipo.lower():
+                continue
+        itens.append({"referencia": referencia, "tipo": tipo})
+    return itens
+
+
+def listar_avaliacoes_plano(session: Session, dof: str) -> list[dict]:
+    """Lista avaliações cadastradas no plano de ensino (A1/A2 etc.).
+
+    Returns:
+        list[dict]: [{tipo, nome, peso, descritivo, data_inicial, data_final}]
+    """
+    resp = session.post(
+        f"{BASE_URL}/portal/modules/prof/editPlanoEnsinoAvaliacao.jspa",
+        data={"action": "getAvaliacoes", "dof": dof},
+    )
+    soup = _soup(resp.text)
+    itens = []
+    for tr in soup.find_all("tr"):
+        tds = tr.find_all("td")
+        if len(tds) < 4:
+            continue
+        tipo = re.sub(r"\s+", " ", tds[0].get_text()).strip()
+        if not tipo or tipo.lower().startswith("tipo"):
+            continue
+        itens.append({
+            "tipo":          tipo,
+            "nome":          re.sub(r"\s+", " ", tds[1].get_text()).strip(),
+            "peso":          re.sub(r"\s+", " ", tds[2].get_text()).strip(),
+            "descritivo":    tds[3].get_text("\n", strip=True),
+            "data_inicial":  re.sub(r"\s+", " ", tds[4].get_text()).strip() if len(tds) > 4 else "",
+            "data_final":    re.sub(r"\s+", " ", tds[5].get_text()).strip() if len(tds) > 5 else "",
+        })
+    return itens
+
+
+def obter_plano_ensino(session: Session, dof: str) -> dict:
+    """Lê o plano de ensino completo de uma oferta (somente leitura).
+
+    Inclui textos principais, unidades, cronograma, bibliografias e avaliações.
+
+    Args:
+        dof: código DOF da disciplina ofertada.
+
+    Returns:
+        dict com chaves:
+          dof, disciplina, objetivo_geral, justificativa, metodologia,
+          avaliacao, unidades_texto, unidades, cronograma, bibliografias,
+          avaliacoes
+    """
+    resp = session.get(
+        f"{BASE_URL}/portal/modules/prof/editPlanoEnsino.jspa",
+        params={"dof": dof},
+    )
+    soup = _soup(resp.text)
+    h2 = soup.find("h2")
+    disciplina = re.sub(r"\s+", " ", h2.get_text()).strip() if h2 else ""
+    # fallback: metadados na página
+    if not disciplina:
+        for tr in soup.find_all("tr"):
+            tds = tr.find_all("td")
+            if len(tds) >= 2 and "componente" in tds[0].get_text().lower():
+                disciplina = re.sub(r"\s+", " ", tds[1].get_text()).strip()
+                break
+
+    return {
+        "dof":             str(dof),
+        "disciplina":      disciplina,
+        "objetivo_geral":  _campo_plano(soup, "objetivoGeral"),
+        "justificativa":   _campo_plano(soup, "justificativa"),
+        "metodologia":     _campo_plano(soup, "metodologiaPEA"),
+        "avaliacao":       _campo_plano(soup, "avaliacaoPEA"),
+        "unidades_texto":  _campo_plano(soup, "unidadesEnsinoPEA"),
+        "unidades":        listar_unidades_plano(session, dof),
+        "cronograma":      listar_cronograma_plano(session, dof),
+        "bibliografias":   listar_bibliografias_plano(session, dof),
+        "avaliacoes":      listar_avaliacoes_plano(session, dof),
+    }
+
+
+def analisar_plano_trilha(session: Session, dof: str, *, incluir_atividades: bool = False) -> dict:
+    """Compara (somente leitura) o plano de ensino com a trilha atual no Moodle.
+
+    Não cria nem altera seções/atividades. Usa o plano como fonte e a estrutura
+    do curso Moodle como espelho atual.
+
+    Args:
+        dof: código DOF.
+        incluir_atividades: se True, lista atividades de cada seção Moodle
+            (mais lento).
+
+    Returns:
+        dict com ``plano``, ``trilha`` (estrutura Moodle) e ``resumo``
+        (contagens e padrões detectados).
+    """
+    from . import moodle as moodle_mod
+
+    plano = obter_plano_ensino(session, dof)
+    ms, course_id = moodle_mod.abrir_curso(session, dof)
+    trilha = moodle_mod.obter_estrutura_curso(
+        ms, course_id, incluir_atividades=incluir_atividades
+    )
+
+    datas_plano = sorted({
+        c["data_inicio"] for c in plano["cronograma"]
+        if c.get("data_inicio")
+    })
+    datas_trilha = sorted({
+        s.get("data") for s in trilha["secoes"] if s.get("data")
+    })
+
+    return {
+        "dof": dof,
+        "plano": plano,
+        "trilha": trilha,
+        "resumo": {
+            "n_unidades_plano": len(plano["unidades"]),
+            "n_cronograma_plano": len(plano["cronograma"]),
+            "n_bibliografias": len(plano["bibliografias"]),
+            "n_avaliacoes_plano": len(plano["avaliacoes"]),
+            "n_secoes_moodle": trilha["n_secoes"],
+            "padrao_trilha": trilha["padrao"],
+            "datas_plano": datas_plano,
+            "datas_trilha": datas_trilha,
+            "datas_so_no_plano": sorted(set(datas_plano) - set(datas_trilha)),
+            "datas_so_na_trilha": sorted(set(datas_trilha) - set(datas_plano)),
+        },
+    }
 
 
 # ── Avaliações e Notas ────────────────────────────────────────────────────────
