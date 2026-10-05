@@ -1,0 +1,26 @@
+---
+description: Regras do unoesc-tools (Portal UNOESC + Moodle ON) — credenciais, dry_run e escrita segura
+globs:
+alwaysApply: true
+---
+
+# unoesc-tools
+
+Pacote Python que automatiza o Portal de Ensino UNOESC e o Moodle ON, usado por professores.
+As instruções completas estão em `AGENTS.md` na raiz do repositório — leia antes de alterar o código.
+
+O essencial:
+
+1. **Credencial nunca entra em código, prompt, log ou commit.** Vem de `UNOESC_USUARIO` / `UNOESC_SENHA` no
+   ambiente ou de arquivo com permissão `600`. Se não tiver, pergunte ao humano.
+2. **`dry_run=True` é o padrão e continua assim.** Mostre a prévia do que será escrito e espere confirmação.
+3. **Nada apaga.** Não implemente remoção.
+4. **Mensagem para aluno e lançamento de nota só com ordem explícita** — `enviar_mensagem_alunos`,
+   `enviar_mensagem_turmas`, `comunicar_estudantes`, `enviar_notificacao_on`, `lancar_notas_diario`,
+   `importar_notas_diario`, `lancar_faltas`. Use a leitura equivalente para conferir antes.
+5. **Nunca invente dado acadêmico** (nota, turma, aluno, conteúdo de plano). Fonte que não respondeu é fonte que
+   não respondeu.
+6. **Dado pessoal de aluno não vai para log nem arquivo temporário.**
+
+Comece lendo `unoesc/__init__.py` (mapa das funções públicas), `exemplos/` (um script por fluxo) e `README.md`
+(referência da API). Ao criar função pública, exporte em `unoesc/__init__.py` e cite na tabela do README.

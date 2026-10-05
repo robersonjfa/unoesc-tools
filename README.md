@@ -72,6 +72,33 @@ export UNOESC_SENHA="$(grep -m1 '^SENHA=' ~/.minha-credencial | cut -d= -f2-)"
 
 ---
 
+## Plugando em agentes de IA
+
+O repositório já vem com os arquivos de instrução que os agentes de código leem. Não precisa configurar nada:
+abra o projeto na ferramenta e ela encontra as regras sozinha.
+
+| Ferramenta | Arquivo que ela lê | Incluso |
+|---|---|---|
+| Codex (OpenAI), opencode, T3 Code, Jules, Warp, Roo Code, Kilo Code, goose, VS Code | `AGENTS.md` | ✅ |
+| Claude Code | `CLAUDE.md` (que importa o `AGENTS.md`) | ✅ |
+| Cursor | `.cursor/rules/unoesc-tools.mdc` e o `AGENTS.md` | ✅ |
+| Gemini CLI | `GEMINI.md` | ✅ |
+| GitHub Copilot (CLI e VS Code) | `.github/copilot-instructions.md` | ✅ |
+
+O **`AGENTS.md`** é o arquivo principal: é nele que estão as regras invioláveis — credencial fora do código,
+`dry_run=True` por padrão, nada apaga, mensagem para aluno e lançamento de nota só com ordem explícita, e nunca
+inventar dado acadêmico. Os demais arquivos são cascas finas que apontam para ele, de modo que melhorar a regra
+em um lugar melhora para todos.
+
+**Como saber que plugou:** depois de instalar, peça ao agente *"liste minhas disciplinas usando o unoesc-tools"*.
+Se vier a lista, está funcionando. Para conferir que ele entendeu os limites, pergunte *"posso rodar o sync da
+trilha?"* — a resposta certa é que roda em `dry_run`, com prévia antes de executar.
+
+> **MCP:** hoje o acesso é por código Python — o agente importa `unoesc` e chama as funções. Um servidor MCP
+> dedicado ainda não existe; é o próximo passo natural, se for útil.
+
+---
+
 ## Exemplos
 
 Os arquivos em `exemplos/` rodam direto e servem de receita para cada fluxo:
@@ -211,6 +238,11 @@ unoesc-tools/
 │   ├── plano_trilha.py
 │   ├── plano_trilha_sync.py
 │   └── exportar_questionario.py
+├── AGENTS.md               ← instruções para agentes de IA (arquivo principal)
+├── CLAUDE.md               ← Claude Code (importa o AGENTS.md)
+├── GEMINI.md               ← Gemini CLI
+├── .cursor/rules/          ← Cursor
+├── .github/                ← GitHub Copilot
 ├── pyproject.toml
 ├── requirements.txt
 └── README.md
