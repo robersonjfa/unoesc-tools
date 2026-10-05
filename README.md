@@ -2,9 +2,16 @@
 
 Ferramentas Python para automação do [Portal de Ensino UNOESC](https://acad.unoesc.edu.br) e do [Moodle ON](https://on.unoesc.edu.br).
 
-Permite acesso programático a disciplinas, diário de classe, plano de ensino, notas, mensagens, atividades do Moodle e exportação de questionários/banco de questões.
+Dá acesso programático a disciplinas, diário de classe, plano de ensino, notas, mensagens e atividades do Moodle, além da exportação de questionários e bancos de questões. O pacote continua importável como `unoesc`.
 
-O pacote Python continua importável como `unoesc`.
+---
+
+## Segurança e limites
+
+- **Nada apaga nada.** As funções de escrita no Moodle criam e atualizam seções e atividades; não existe remoção implementada.
+- **`dry_run=True` é o padrão** em tudo que escreve (sync de trilha, criação de seção/atividade). Para valer, precisa ser desligado explicitamente.
+- **Credencial nunca fica no código.** Vem de variável de ambiente ou de arquivo com permissão `600` (ver *Autenticação*).
+- A sessão (cookies) fica em `~/.unoesc_session.json`, permissão `600`.
 
 ---
 
@@ -25,17 +32,6 @@ pip install -r requirements.txt
 
 ## Autenticação
 
-### Modo interativo — macOS
-
-No **primeiro uso**, dois dialogs nativos são exibidos:
-1. **Código ou CPF** — salvo em `~/.unoesc_config.json`
-2. **Senha** — solicitada a cada sessão expirada (nunca salva em disco)
-
-```python
-import unoesc
-session = unoesc.abrir_sessao()
-```
-
 ### Modo headless — CI / Linux / Windows / agentes
 
 ```bash
@@ -48,13 +44,58 @@ import unoesc
 session = unoesc.abrir_sessao()
 ```
 
-As variáveis de ambiente têm prioridade. A sessão fica em `~/.unoesc_session.json` (perm. 600).
+As variáveis de ambiente têm prioridade sobre qualquer outra fonte.
 
-> **Com LLMs:** defina as env vars no shell/config do projeto — nunca peça ao agente para escrever a senha no código.
+### Modo interativo — macOS
+
+No **primeiro uso**, dois diálogos nativos aparecem:
+
+1. **Código ou CPF** — salvo em `~/.unoesc_config.json`
+2. **Senha** — pedida a cada sessão expirada (nunca salva em disco)
+
+```python
+import unoesc
+session = unoesc.abrir_sessao()
+```
+
+### Usando com agentes / LLM
+
+O caminho recomendado é o agente **ler a credencial de um arquivo com permissão `600`** e exportá-la como variável de ambiente no processo — nunca escrever a senha no código, em prompt ou em log:
+
+```bash
+# arquivo ~/.minha-credencial (chmod 600), com duas linhas: USUARIO=... / SENHA=...
+export UNOESC_USUARIO="$(grep -m1 '^USUARIO=' ~/.minha-credencial | cut -d= -f2-)"
+export UNOESC_SENHA="$(grep -m1 '^SENHA=' ~/.minha-credencial | cut -d= -f2-)"
+```
+
+> Nunca peça ao agente para digitar a senha no meio da conversa, e nunca aceite que ele a escreva em arquivo versionado.
+
+---
+
+## Exemplos
+
+Os arquivos em `exemplos/` rodam direto e servem de receita para cada fluxo:
+
+| Arquivo | O que mostra |
+|---|---|
+| `basico.py` | Navegação básica pelo portal e pelo Moodle |
+| `notas.py` | Exportação de notas nas várias formas (CSV, Excel, por tarefa, por quiz, formato do diário) |
+| `importar_notas.py` | Notas do Moodle → diário do Portal UNOESC |
+| `presenca.py` | Encontros do diário: consultar e lançar faltas |
+| `mensagens.py` | Comunicação com estudantes: mensagem do portal, mensagem por turma e push no app Unoesc ON |
+| `plano_trilha.py` | Ler o plano de ensino e comparar com a trilha já existente no Moodle |
+| `plano_trilha_sync.py` | Prévia da sincronização plano → trilha Moodle (somente `dry_run`) |
+| `exportar_questionario.py` | Questionário/banco de questões do Moodle → DOCX e PDF |
+
+```bash
+python exemplos/plano_trilha.py
+```
 
 ---
 
 ## Referência da API
+
+74 funções públicas, todas reexportadas na raiz do pacote (`import unoesc`).
 
 ### Autenticação
 
@@ -70,51 +111,60 @@ As variáveis de ambiente têm prioridade. A sessão fica em `~/.unoesc_session.
 | `listar_diarios` / `abrir_diario` | Diário de classe |
 | `listar_encontros` / `obter_presencas_encontro` | Encontros e lista de faltas |
 | `lancar_faltas` / `salvar_presencas_encontro` | Lançar faltas / conteúdo do encontro |
-| `adicionar_encontro` / `remover_encontro` / `definir_encontro_presencial` | Manutenção do quadro |
+| `adicionar_encontro` / `remover_encontro` / `definir_encontro_presencial` | Manutenção do quadro de encontros |
 | `listar_planos_ensino` / `obter_plano_ensino` | Plano de ensino (leitura) |
-| `listar_cronograma_plano` / `listar_unidades_plano` | Cronograma e unidades |
+| `listar_cronograma_plano` / `listar_unidades_plano` | Cronograma e unidades do plano |
 | `listar_bibliografias_plano` / `listar_avaliacoes_plano` | Bibliografia e avaliações do plano |
-| `analisar_plano_trilha` | Diff read-only plano × Moodle |
-| `planejar_sincronizacao_trilha` / `sincronizar_trilha_do_plano` | Preview e sync da trilha (`dry_run=True` por padrão) |
-| `criar_secao` / `atualizar_secao` / `criar_atividade` | Escrita Moodle (nunca apaga; `dry_run=True` padrão) |
-| `obter_estrutura_curso` / `classificar_secao` | Estrutura da trilha no Moodle |
+| `analisar_plano_trilha` | Diff somente-leitura: plano de ensino × trilha do Moodle |
+| `planejar_secoes_do_plano` | Calcula as seções que a trilha deveria ter |
+| `planejar_atividades_do_plano` | Calcula as atividades de cada seção |
+| `planejar_sincronizacao_trilha` / `sincronizar_trilha_do_plano` | Prévia e execução do sync (`dry_run=True` por padrão) |
 | `consultar_notas` | Notas consolidadas |
-| `lista_presenca` / `lista_estudantes_a2` | Listas A1 / recuperação |
-| `listar_alunos_para_mensagem` / `enviar_mensagem_alunos` | Mensagem acadêmica |
+| `lista_presenca` / `lista_estudantes_a2` | Listas de A1 e de recuperação (A2) |
+| `listar_alunos_para_mensagem` / `buscar_alunos_mensagem` | Localizar alunos para mensagem |
+| `listar_turmas_mensagem` | Turmas disponíveis para envio |
+| `enviar_mensagem_alunos` / `enviar_mensagem_turmas` | Envio de mensagem acadêmica |
+| `comunicar_estudantes` | Envio combinado (portal + notificação) |
 | `enviar_notificacao_on` | Push no app Unoesc ON |
-| `listar_ocorrencias` | Observações de alunos |
-| `relatorio_perfil` / `relatorio_telefones` / `relatorio_assinaturas` | Relatórios |
+| `listar_ocorrencias` | Observações registradas sobre alunos |
+| `relatorio_perfil` / `relatorio_telefones` / `relatorio_assinaturas` | Relatórios de turma |
 | `quadro_horarios` | Horários do professor |
-| `listar_avaliacoes_diario` / `importar_notas_diario` | Importação CSV no diário |
-| `extrair_mapa_alunos_diario` / `lancar_notas_diario` | Lançamento nota a nota |
+| `listar_avaliacoes_diario` / `importar_notas_diario` | Importação de CSV de notas no diário |
+| `extrair_mapa_alunos_diario` / `lancar_notas_diario` | Lançamento de nota aluno a aluno |
 
 ### Moodle ON (`moodle.py`)
 
 | Função | Descrição |
 |---|---|
-| `abrir_curso` | SSO JWT → `(session, course_id)` |
+| `abrir_curso` | SSO via JWT → `(session, course_id)` |
 | `listar_secoes` / `buscar_secao` | Seções do curso |
 | `listar_atividades` / `buscar_atividade` | Atividades (`quiz`, `assign`, `lti`, …) |
-| `ver_tarefa` / `ver_quiz` / `ver_forum` | Detalhes |
-| `baixar_recurso` | Download de arquivo |
+| `classificar_secao` | Classifica a seção pelo conteúdo |
+| `obter_estrutura_curso` | Estrutura completa da trilha |
+| `criar_secao` / `atualizar_secao` / `criar_atividade` | Escrita no Moodle (`dry_run=True` por padrão; nunca apaga) |
+| `ver_tarefa` / `ver_quiz` / `ver_forum` | Detalhes de cada tipo de atividade |
+| `baixar_recurso` | Download de arquivo do curso |
 
 ### Notas Moodle (`grades.py`)
 
 | Função | Descrição |
 |---|---|
-| `listar_itens_avaliacao` | Itens do gradebook |
-| `exportar_notas_csv` / `exportar_notas_excel` | Exportação do curso |
-| `exportar_notas_tarefa` / `exportar_notas_quiz` | Por atividade |
-| `exportar_notas_para_portal` | CSV no formato do diário UNOESC |
+| `listar_itens_avaliacao` | Itens do livro de notas |
+| `exportar_notas_csv` / `exportar_notas_excel` | Exportação do curso inteiro |
+| `exportar_notas_tarefa` / `exportar_notas_quiz` | Exportação por atividade |
+| `exportar_notas_para_portal` | CSV no formato aceito pelo diário UNOESC |
 
-### Questionários e banco (`quiz_export.py`)
+### Questionários e banco de questões (`quiz_export.py`)
 
 | Função | Descrição |
 |---|---|
-| `exportar_questionario_disciplina` | Quiz → DOCX/PDF (`fonte="quiz"` ou `"banco"`) |
-| `exportar_banco_questoes_disciplina` | Banco inteiro do curso → DOCX/PDF |
-| `extrair_questoes_quiz` | Questões sorteadas na prévia |
-| `listar_categorias_banco` / `listar_questoes_categoria` | Navegação do banco |
+| `listar_categorias_banco` / `listar_questoes_categoria` | Navegação do banco de questões |
+| `obter_questao` | Conteúdo de uma questão específica |
+| `analisar_quiz` | Estrutura do quiz (questões, notas, tentativas) |
+| `extrair_questionario` / `extrair_banco_questoes` | Extração do conteúdo para memória |
+| `exportar_questionario_docx` / `exportar_questionario_pdf` | Exportação direta em cada formato |
+| `exportar_questionario` / `exportar_questionario_disciplina` | Quiz → DOCX/PDF (`fonte="quiz"` ou `"banco"`) |
+| `exportar_banco_questoes` / `exportar_banco_questoes_disciplina` | Banco inteiro do curso → DOCX/PDF |
 
 ```python
 import unoesc
@@ -146,7 +196,7 @@ unoesc.exportar_banco_questoes_disciplina(
 ```
 unoesc-tools/
 ├── unoesc/                 ← pacote Python (import unoesc)
-│   ├── __init__.py
+│   ├── __init__.py         ← reexporta as 74 funções públicas
 │   ├── auth.py
 │   ├── portal.py
 │   ├── moodle.py
@@ -155,8 +205,11 @@ unoesc-tools/
 ├── exemplos/
 │   ├── basico.py
 │   ├── notas.py
-│   ├── mensagens.py
 │   ├── importar_notas.py
+│   ├── presenca.py
+│   ├── mensagens.py
+│   ├── plano_trilha.py
+│   ├── plano_trilha_sync.py
 │   └── exportar_questionario.py
 ├── pyproject.toml
 ├── requirements.txt
@@ -168,5 +221,9 @@ unoesc-tools/
 | Arquivo | Conteúdo |
 |---|---|
 | `~/.unoesc_config.json` | Código/CPF (modo interativo) |
-| `~/.unoesc_session.json` | Cookies de sessão |
+| `~/.unoesc_session.json` | Cookies de sessão (permissão `600`) |
 | `~/Downloads/*.docx` / `*.pdf` / `*.csv` / `*.xlsx` | Exportações |
+
+## Requisitos
+
+Python 3.9+ e as dependências de `requirements.txt` (`requests`, `beautifulsoup4`, `python-docx`, `openpyxl`, `fpdf2`, entre outras).
