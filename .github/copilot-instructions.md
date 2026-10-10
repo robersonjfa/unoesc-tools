@@ -13,9 +13,9 @@ O que não pode ser quebrado:
   funções de leitura.
 - Nunca invente dado acadêmico (nota, turma, aluno, plano) e não coloque dado pessoal de aluno em log.
 
-Mapa do projeto: `unoesc/__init__.py` (74 funções públicas reexportadas), `unoesc/portal.py` (Portal),
+Mapa do projeto: `unoesc/__init__.py` (76 funções públicas reexportadas), `unoesc/portal.py` (Portal),
 `unoesc/moodle.py` (Moodle ON), `unoesc/grades.py` (notas), `unoesc/quiz_export.py` (questionários),
-`exemplos/` (um script por fluxo) e `README.md` (referência da API).
+`examples/` (um script por fluxo) e `README.md` (referência da API).
 
 Ao criar uma função pública, exporte-a em `unoesc/__init__.py` (`from ... import ...` e `__all__`) e cite na
 tabela do README — já houve função documentada que não existia.

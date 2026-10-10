@@ -25,13 +25,13 @@ MODULOS = {
     "parecer_diario":        "/portal/modules/prof/diarioClasseTramiteCoordenador.jspa",
     "parecer_plano":         "/portal/modules/prof/planoEnsinoCoordenadorAcessor.jspa",
     "plano_atividades":      "/portal/modules/prof/planoAtividades.jspa",
-    "quadro_horarios":       "/portal/modules/prof/quadroHorariosProfessor.jspa",
+    "list_timetable":       "/portal/modules/prof/quadroHorariosProfessor.jspa",
     "consulta_notas":        "/portal/modules/prof/consnota.jspa",
     "lista_presenca_a1":     "/portal/modules/prof/alulistag2.jspa",
-    "lista_estudantes_a2":   "/portal/modules/prof/alulistaexame.jspa",
-    "relatorio_assinaturas": "/portal/modules/prof/aluassinat.jspa",
-    "relatorio_perfil":      "/portal/modules/prof/aluperfil.jspa",
-    "relatorio_telefones":   "/portal/modules/prof/alufone.jspa",
+    "list_a2_students":   "/portal/modules/prof/alulistaexame.jspa",
+    "report_signatures": "/portal/modules/prof/aluassinat.jspa",
+    "report_profiles":      "/portal/modules/prof/aluperfil.jspa",
+    "report_phones":   "/portal/modules/prof/alufone.jspa",
     "diario_aulas":          "/portal/modules/prof/diarioClasseAulas.jspa",
     "diario_notas":          "/portal/modules/prof/diarioClasseAvaliacoesNotas.jspa",
     "diario_arquivo":        "/portal/modules/prof/diarioClasseAvaliacoesArquivo.jspa",
@@ -68,7 +68,7 @@ def _tabela(soup, index=0):
 
 # ── Disciplinas ───────────────────────────────────────────────────────────────
 
-def listar_disciplinas(session: Session, ano_periodo: str | None = None) -> list[dict]:
+def list_disciplines(session: Session, ano_periodo: str | None = None) -> list[dict]:
     """Lista disciplinas do professor com acesso ao Moodle.
 
     Args:
@@ -96,14 +96,14 @@ def listar_disciplinas(session: Session, ano_periodo: str | None = None) -> list
     return result
 
 
-def buscar_disciplina(session: Session, termo: str) -> dict | None:
+def find_discipline(session: Session, termo: str) -> dict | None:
     """Busca disciplina por código ou nome parcial (case-insensitive).
 
     Returns:
         dict com {codigo, nome, dof} ou None se não encontrado.
     """
     termo = termo.lower()
-    for d in listar_disciplinas(session):
+    for d in list_disciplines(session):
         if termo in d["codigo"].lower() or termo in d["nome"].lower():
             return d
     return None
@@ -111,7 +111,7 @@ def buscar_disciplina(session: Session, termo: str) -> dict | None:
 
 # ── Diário de Classe ──────────────────────────────────────────────────────────
 
-def listar_diarios(session: Session, ano_periodo: str | None = None) -> list[dict]:
+def list_class_diaries(session: Session, ano_periodo: str | None = None) -> list[dict]:
     """Lista diários de classe do professor no período.
 
     Args:
@@ -167,7 +167,7 @@ def listar_diarios(session: Session, ano_periodo: str | None = None) -> list[dic
     return result
 
 
-def abrir_diario(session: Session, dof: str) -> str:
+def open_class_diary(session: Session, dof: str) -> str:
     """Retorna HTML bruto do quadro de encontros do diário.
 
     Args:
@@ -180,16 +180,16 @@ def abrir_diario(session: Session, dof: str) -> str:
     return resp.text
 
 
-def listar_encontros(session: Session, dof: str) -> list[dict]:
+def list_meetings(session: Session, dof: str) -> list[dict]:
     """Lista os encontros (aulas) do quadro do diário de classe.
 
     Args:
-        dof: código DOF da disciplina (campo ``dof`` de ``listar_diarios`` /
-             ``listar_disciplinas``).
+        dof: código DOF da disciplina (campo ``dof`` de ``list_class_diaries`` /
+             ``list_disciplines``).
 
     Returns:
         list[dict]: [{aula, titulo, data, matriculados, presencial, pode_remover}]
-          - aula:         ID usado em ``obter_presencas_encontro`` / salvar faltas
+          - aula:         ID usado em ``get_meeting_attendance`` / salvar faltas
           - presencial:   True/False/None
           - pode_remover: se o portal exibe "Remover Encontro"
     """
@@ -222,7 +222,7 @@ def listar_encontros(session: Session, dof: str) -> list[dict]:
     return encontros
 
 
-def adicionar_encontro(session: Session, dof: str) -> dict:
+def add_meeting(session: Session, dof: str) -> dict:
     """Adiciona um encontro ao quadro do diário (mesma ação do botão do portal).
 
     Returns:
@@ -235,11 +235,11 @@ def adicionar_encontro(session: Session, dof: str) -> dict:
     return {
         "sucesso": resp.status_code == 200,
         "status_code": resp.status_code,
-        "encontros": listar_encontros(session, dof) if resp.status_code == 200 else [],
+        "encontros": list_meetings(session, dof) if resp.status_code == 200 else [],
     }
 
 
-def remover_encontro(session: Session, aula: str, dof: str | None = None) -> dict:
+def remove_meeting(session: Session, aula: str, dof: str | None = None) -> dict:
     """Remove um encontro do quadro.
 
     Falha se houver QR Code de presença em aberto.
@@ -257,11 +257,11 @@ def remover_encontro(session: Session, aula: str, dof: str | None = None) -> dic
         "status_code": resp.status_code,
     }
     if dof and resp.status_code == 200:
-        out["encontros"] = listar_encontros(session, dof)
+        out["encontros"] = list_meetings(session, dof)
     return out
 
 
-def definir_encontro_presencial(session: Session, aula: str, presencial: bool) -> dict:
+def set_meeting_in_person(session: Session, aula: str, presencial: bool) -> dict:
     """Marca o encontro como presencial (S) ou não presencial (N).
 
     Em EAD, encontros não presenciais ocultam o quadro de faltas.
@@ -350,11 +350,11 @@ def _parse_presencas_html(html: str) -> dict:
     }
 
 
-def obter_presencas_encontro(session: Session, aula: str) -> dict:
+def get_meeting_attendance(session: Session, aula: str) -> dict:
     """Lê conteúdo e lançamento de faltas de um encontro.
 
     Args:
-        aula: ID do encontro (campo ``aula`` de ``listar_encontros``).
+        aula: ID do encontro (campo ``aula`` de ``list_meetings``).
 
     Returns:
         dict com disciplina, datas, conteúdo, observações e lista de alunos
@@ -371,7 +371,7 @@ def obter_presencas_encontro(session: Session, aula: str) -> dict:
     return data
 
 
-def salvar_presencas_encontro(
+def save_meeting_attendance(
     session: Session,
     aula: str,
     faltas: dict[str, int] | None = None,
@@ -401,7 +401,7 @@ def salvar_presencas_encontro(
     Returns:
         dict com {sucesso, status_code, publicado, alterados, dry_run, ...}
     """
-    atual = obter_presencas_encontro(session, aula)
+    atual = get_meeting_attendance(session, aula)
     if atual.get("publicado"):
         return {
             "sucesso": False,
@@ -505,7 +505,7 @@ def salvar_presencas_encontro(
     }
 
 
-def lancar_faltas(
+def post_absences(
     session: Session,
     aula: str,
     faltosos: dict[str, int] | list[str] | None = None,
@@ -523,15 +523,15 @@ def lancar_faltas(
         presentes:    RAs marcados com 0 falta.
         zerar_demais: se True, quem não estiver em ``faltosos`` recebe 0.
         dry_run:      não envia; só simula.
-        **kwargs:     repassados a ``salvar_presencas_encontro``
+        **kwargs:     repassados a ``save_meeting_attendance``
                       (conteudo, observacoes, datas, ...).
 
     Examples:
         # Só marca faltosos; demais ficam como estão
-        lancar_faltas(s, aula, {"412507": 2, "414049": 1})
+        post_absences(s, aula, {"412507": 2, "414049": 1})
 
         # Todo mundo presente, exceto esses
-        lancar_faltas(s, aula, faltosos=["412507"], zerar_demais=True)
+        post_absences(s, aula, faltosos=["412507"], zerar_demais=True)
     """
     mapa: dict[str, int] = {}
     if isinstance(faltosos, dict):
@@ -544,7 +544,7 @@ def lancar_faltas(
             mapa[str(ra)] = 0
 
     if zerar_demais:
-        atual = obter_presencas_encontro(session, aula)
+        atual = get_meeting_attendance(session, aula)
         if atual.get("publicado"):
             return {
                 "sucesso": False,
@@ -555,14 +555,14 @@ def lancar_faltas(
         for a in atual.get("alunos", []):
             mapa.setdefault(a["ra"], 0)
 
-    return salvar_presencas_encontro(
+    return save_meeting_attendance(
         session, aula, faltas=mapa or None, dry_run=dry_run, **kwargs
     )
 
 
 # ── Plano de Ensino ───────────────────────────────────────────────────────────
 
-def listar_planos_ensino(session: Session, ano_periodo: str | None = None) -> list[dict]:
+def list_teaching_plans(session: Session, ano_periodo: str | None = None) -> list[dict]:
     """Lista planos de ensino do professor no período.
 
     Args:
@@ -647,7 +647,7 @@ def _parse_data_cronograma(dia: str) -> dict:
     return out
 
 
-def listar_cronograma_plano(session: Session, dof: str) -> list[dict]:
+def list_plan_schedule(session: Session, dof: str) -> list[dict]:
     """Lista o cronograma (encontros) do plano de ensino.
 
     Fonte: ``editPlanoEnsinoCronograma.jspa?action=getCronograma`` (somente leitura).
@@ -687,7 +687,7 @@ def listar_cronograma_plano(session: Session, dof: str) -> list[dict]:
     return itens
 
 
-def listar_unidades_plano(session: Session, dof: str) -> list[dict]:
+def list_plan_units(session: Session, dof: str) -> list[dict]:
     """Lista unidades de ensino do plano.
 
     Returns:
@@ -714,7 +714,7 @@ def listar_unidades_plano(session: Session, dof: str) -> list[dict]:
     return itens
 
 
-def listar_bibliografias_plano(session: Session, dof: str) -> list[dict]:
+def list_plan_bibliographies(session: Session, dof: str) -> list[dict]:
     """Lista bibliografias (básica/complementar) do plano.
 
     Returns:
@@ -743,7 +743,7 @@ def listar_bibliografias_plano(session: Session, dof: str) -> list[dict]:
     return itens
 
 
-def listar_avaliacoes_plano(session: Session, dof: str) -> list[dict]:
+def list_plan_assessments(session: Session, dof: str) -> list[dict]:
     """Lista avaliações cadastradas no plano de ensino (A1/A2 etc.).
 
     Returns:
@@ -773,7 +773,7 @@ def listar_avaliacoes_plano(session: Session, dof: str) -> list[dict]:
     return itens
 
 
-def obter_plano_ensino(session: Session, dof: str) -> dict:
+def get_teaching_plan(session: Session, dof: str) -> dict:
     """Lê o plano de ensino completo de uma oferta (somente leitura).
 
     Inclui textos principais, unidades, cronograma, bibliografias e avaliações.
@@ -810,14 +810,14 @@ def obter_plano_ensino(session: Session, dof: str) -> dict:
         "metodologia":     _campo_plano(soup, "metodologiaPEA"),
         "avaliacao":       _campo_plano(soup, "avaliacaoPEA"),
         "unidades_texto":  _campo_plano(soup, "unidadesEnsinoPEA"),
-        "unidades":        listar_unidades_plano(session, dof),
-        "cronograma":      listar_cronograma_plano(session, dof),
-        "bibliografias":   listar_bibliografias_plano(session, dof),
-        "avaliacoes":      listar_avaliacoes_plano(session, dof),
+        "unidades":        list_plan_units(session, dof),
+        "cronograma":      list_plan_schedule(session, dof),
+        "bibliografias":   list_plan_bibliographies(session, dof),
+        "avaliacoes":      list_plan_assessments(session, dof),
     }
 
 
-def analisar_plano_trilha(session: Session, dof: str, *, incluir_atividades: bool = False) -> dict:
+def analyze_plan_trail(session: Session, dof: str, *, incluir_atividades: bool = False) -> dict:
     """Compara (somente leitura) o plano de ensino com a trilha atual no Moodle.
 
     Não cria nem altera seções/atividades. Usa o plano como fonte e a estrutura
@@ -834,7 +834,7 @@ def analisar_plano_trilha(session: Session, dof: str, *, incluir_atividades: boo
     """
     from . import moodle as moodle_mod
 
-    plano = obter_plano_ensino(session, dof)
+    plano = get_teaching_plan(session, dof)
     ms, course_id = moodle_mod.abrir_curso(session, dof)
     trilha = moodle_mod.obter_estrutura_curso(
         ms, course_id, incluir_atividades=incluir_atividades
@@ -958,7 +958,7 @@ def _heuristica_tipo_atividade(texto: str) -> str | None:
     return None
 
 
-def planejar_secoes_do_plano(
+def plan_sections_from_plan(
     plano: dict,
     *,
     padrao: str | None = None,
@@ -968,7 +968,7 @@ def planejar_secoes_do_plano(
     """Monta a lista desejada de seções Moodle a partir do plano (sem HTTP).
 
     Args:
-        plano: retorno de ``obter_plano_ensino``.
+        plano: retorno de ``get_teaching_plan``.
         padrao: ``ead_semanas`` | ``presencial_aulas`` | None (auto).
         semanas_por_unidade: obrigatório no EAD se a trilha atual não permitir
             inferir (ex. ``[2, 3]`` = 2 semanas na U1 e 3 na U2).
@@ -1112,7 +1112,7 @@ def planejar_secoes_do_plano(
     return secoes
 
 
-def planejar_atividades_do_plano(
+def plan_activities_from_plan(
     plano: dict,
     secoes_planejadas: list[dict],
     *,
@@ -1235,7 +1235,7 @@ def _match_secao_planejada(desejada: dict, existentes: list[dict]) -> dict | Non
     return None
 
 
-def planejar_sincronizacao_trilha(
+def plan_trail_sync(
     session: Session,
     dof: str,
     *,
@@ -1252,14 +1252,14 @@ def planejar_sincronizacao_trilha(
     """
     from . import moodle as moodle_mod
 
-    plano = obter_plano_ensino(session, dof)
+    plano = get_teaching_plan(session, dof)
     ms, course_id = moodle_mod.abrir_curso(session, dof)
     trilha = moodle_mod.obter_estrutura_curso(
         ms, course_id, incluir_atividades=incluir_atividades
     )
 
     padrao_res = _detectar_padrao_plano(plano, padrao=padrao, trilha=trilha)
-    secoes_planejadas = planejar_secoes_do_plano(
+    secoes_planejadas = plan_sections_from_plan(
         plano,
         padrao=padrao_res,
         semanas_por_unidade=semanas_por_unidade,
@@ -1293,7 +1293,7 @@ def planejar_sincronizacao_trilha(
                 "nome_atual": match.get("nome"),
             })
 
-    atividades_planejadas = planejar_atividades_do_plano(
+    atividades_planejadas = plan_activities_from_plan(
         plano, secoes_planejadas, padrao=padrao_res
     ) if incluir_atividades else []
 
@@ -1347,7 +1347,7 @@ def planejar_sincronizacao_trilha(
     }
 
 
-def sincronizar_trilha_do_plano(
+def sync_trail_from_plan(
     session: Session,
     dof: str,
     *,
@@ -1365,7 +1365,7 @@ def sincronizar_trilha_do_plano(
     """
     from . import moodle as moodle_mod
 
-    plano_sync = planejar_sincronizacao_trilha(
+    plano_sync = plan_trail_sync(
         session,
         dof,
         incluir_atividades=criar_atividades,
@@ -1493,7 +1493,7 @@ def sincronizar_trilha_do_plano(
 
 # ── Avaliações e Notas ────────────────────────────────────────────────────────
 
-def consultar_notas(session: Session, ano_periodo: str | None = None) -> list[dict]:
+def list_grades_summary(session: Session, ano_periodo: str | None = None) -> list[dict]:
     """Retorna tabela de notas consolidada por disciplina.
 
     Returns:
@@ -1504,7 +1504,7 @@ def consultar_notas(session: Session, ano_periodo: str | None = None) -> list[di
     return _tabela(_soup(resp.text))
 
 
-def lista_presenca(session: Session, ano_periodo: str | None = None) -> list[dict]:
+def list_attendance_report(session: Session, ano_periodo: str | None = None) -> list[dict]:
     """Retorna lista de presença A1 (estudantes aptos).
 
     Returns:
@@ -1515,14 +1515,14 @@ def lista_presenca(session: Session, ano_periodo: str | None = None) -> list[dic
     return _tabela(_soup(resp.text))
 
 
-def lista_estudantes_a2(session: Session, ano_periodo: str | None = None) -> list[dict]:
+def list_a2_students(session: Session, ano_periodo: str | None = None) -> list[dict]:
     """Retorna lista de estudantes em recuperação (A2).
 
     Returns:
         list[dict] com nome, RA e nota A1.
     """
     params = {"selAnoPeriodo": ano_periodo} if ano_periodo else None
-    resp = _get(session, "lista_estudantes_a2", params)
+    resp = _get(session, "list_a2_students", params)
     return _tabela(_soup(resp.text))
 
 
@@ -1545,11 +1545,11 @@ def _resolver_dofs(session: Session, disciplinas: str | list[str] | None) -> lis
     # DOFs conhecidos das telas de mensagem / aula online
     dofs_validos: set[str] = set()
     try:
-        dofs_validos.update(t["dof"] for t in listar_turmas_mensagem(session) if t.get("dof"))
+        dofs_validos.update(t["dof"] for t in list_message_classes(session) if t.get("dof"))
     except Exception:
         pass
     try:
-        dofs_validos.update(d["dof"] for d in listar_disciplinas(session) if d.get("dof"))
+        dofs_validos.update(d["dof"] for d in list_disciplines(session) if d.get("dof"))
     except Exception:
         pass
 
@@ -1558,7 +1558,7 @@ def _resolver_dofs(session: Session, disciplinas: str | list[str] | None) -> lis
         if item.isdigit() and (item in dofs_validos or len(item) >= 7):
             dofs.append(item)
             continue
-        disc = buscar_disciplina(session, item)
+        disc = find_discipline(session, item)
         if not disc:
             raise ValueError(f"Disciplina '{item}' não encontrada.")
         dofs.append(disc["dof"])
@@ -1572,7 +1572,7 @@ def _resolver_dofs(session: Session, disciplinas: str | list[str] | None) -> lis
     return out
 
 
-def listar_turmas_mensagem(session: Session, ano_periodo: str | None = None) -> list[dict]:
+def list_message_classes(session: Session, ano_periodo: str | None = None) -> list[dict]:
     """Lista turmas disponíveis para mensagem direta / push.
 
     Returns:
@@ -1601,7 +1601,7 @@ def listar_turmas_mensagem(session: Session, ano_periodo: str | None = None) -> 
     return result
 
 
-def listar_alunos_para_mensagem(
+def list_students_for_message(
     session: Session,
     disciplinas: str | list[str],
     ano_periodo: str | None = None,
@@ -1655,7 +1655,7 @@ def listar_alunos_para_mensagem(
     return alunos
 
 
-def buscar_alunos_mensagem(
+def find_message_students(
     session: Session,
     disciplinas: str | list[str],
     termo: str,
@@ -1663,7 +1663,7 @@ def buscar_alunos_mensagem(
     """Filtra alunos da turma por RA, nome ou e-mail (case-insensitive)."""
     termo = termo.strip().lower()
     return [
-        a for a in listar_alunos_para_mensagem(session, disciplinas)
+        a for a in list_students_for_message(session, disciplinas)
         if termo in a["ra"].lower()
         or termo in a["nome"].lower()
         or termo in a.get("email", "").lower()
@@ -1722,7 +1722,7 @@ def _enviar_mensagem_composta(
     }
 
 
-def enviar_mensagem_turmas(
+def send_message_to_classes(
     session: Session,
     disciplinas: str | list[str],
     assunto: str,
@@ -1739,7 +1739,7 @@ def enviar_mensagem_turmas(
     return _enviar_mensagem_composta(session, resp.text, assunto, mensagem, remetente)
 
 
-def enviar_mensagem_alunos(
+def send_message_to_students(
     session: Session,
     alunos: str | list[str],
     assunto: str,
@@ -1765,7 +1765,7 @@ def enviar_mensagem_alunos(
         raise ValueError("Informe ao menos um RA.")
 
     if disciplinas is None:
-        turmas = listar_turmas_mensagem(session)
+        turmas = list_message_classes(session)
         dofs = [t["dof"] for t in turmas if t.get("dof")]
     else:
         dofs = _resolver_dofs(session, disciplinas)
@@ -1806,7 +1806,7 @@ def enviar_mensagem_alunos(
     return _enviar_mensagem_composta(session, resp3.text, assunto, mensagem, remetente)
 
 
-def enviar_notificacao_on(
+def send_on_notification(
     session: Session,
     mensagem: str,
     disciplinas: str | list[str],
@@ -1867,7 +1867,7 @@ def enviar_notificacao_on(
     }
 
 
-def comunicar_estudantes(
+def notify_students(
     session: Session,
     disciplinas: str | list[str],
     mensagem: str,
@@ -1895,16 +1895,16 @@ def comunicar_estudantes(
         if not assunto:
             raise ValueError("Informe 'assunto' para o canal portal.")
         if alunos:
-            resultado["portal"] = enviar_mensagem_alunos(
+            resultado["portal"] = send_message_to_students(
                 session, alunos=alunos, assunto=assunto, mensagem=mensagem,
                 disciplinas=disciplinas,
             )
         else:
-            resultado["portal"] = enviar_mensagem_turmas(
+            resultado["portal"] = send_message_to_classes(
                 session, disciplinas=disciplinas, assunto=assunto, mensagem=mensagem,
             )
     if "push" in canais:
-        resultado["push"] = enviar_notificacao_on(
+        resultado["push"] = send_on_notification(
             session, mensagem=mensagem, disciplinas=disciplinas,
             titulo=titulo_push or (assunto or ""),
             tipo=tipo_push,
@@ -1914,7 +1914,7 @@ def comunicar_estudantes(
 
 # ── Ocorrências ───────────────────────────────────────────────────────────────
 
-def listar_ocorrencias(session: Session, ano_periodo: str | None = None) -> list[dict]:
+def list_occurrences(session: Session, ano_periodo: str | None = None) -> list[dict]:
     """Lista ocorrências/observações lançadas sobre estudantes.
 
     Returns:
@@ -1927,36 +1927,36 @@ def listar_ocorrencias(session: Session, ano_periodo: str | None = None) -> list
 
 # ── Relatórios ────────────────────────────────────────────────────────────────
 
-def relatorio_perfil(session: Session, ano_periodo: str | None = None) -> list[dict]:
+def report_profiles(session: Session, ano_periodo: str | None = None) -> list[dict]:
     """Retorna relatório de perfil dos estudantes."""
     params = {"selAnoPeriodo": ano_periodo} if ano_periodo else None
-    resp = _get(session, "relatorio_perfil", params)
+    resp = _get(session, "report_profiles", params)
     return _tabela(_soup(resp.text))
 
 
-def relatorio_telefones(session: Session, ano_periodo: str | None = None) -> list[dict]:
+def report_phones(session: Session, ano_periodo: str | None = None) -> list[dict]:
     """Retorna lista de telefones dos estudantes."""
     params = {"selAnoPeriodo": ano_periodo} if ano_periodo else None
-    resp = _get(session, "relatorio_telefones", params)
+    resp = _get(session, "report_phones", params)
     return _tabela(_soup(resp.text))
 
 
-def relatorio_assinaturas(session: Session, ano_periodo: str | None = None) -> list[dict]:
+def report_signatures(session: Session, ano_periodo: str | None = None) -> list[dict]:
     """Retorna relatório de assinaturas de presença."""
     params = {"selAnoPeriodo": ano_periodo} if ano_periodo else None
-    resp = _get(session, "relatorio_assinaturas", params)
+    resp = _get(session, "report_signatures", params)
     return _tabela(_soup(resp.text))
 
 
 # ── Notas — Importação do diário ─────────────────────────────────────────────
 
-def listar_avaliacoes_diario(session: Session, dof: str) -> list[dict]:
+def list_diary_assessments(session: Session, dof: str) -> list[dict]:
     """Lista as avaliações disponíveis no diário de classe de uma disciplina.
 
-    Cada avaliação pode receber notas via importar_notas_diario().
+    Cada avaliação pode receber notas via import_diary_grades().
 
     Args:
-        dof: código DOF da disciplina (campo 'dof' de listar_disciplinas).
+        dof: código DOF da disciplina (campo 'dof' de list_disciplines).
 
     Returns:
         list[dict]: [{nome, cod_tipo_nota, avaliacao, nota}, ...]
@@ -1988,7 +1988,7 @@ def listar_avaliacoes_diario(session: Session, dof: str) -> list[dict]:
     return avaliacoes
 
 
-def importar_notas_diario(
+def import_diary_grades(
     session: Session,
     dof: str,
     csv_path: str,
@@ -2016,7 +2016,7 @@ def importar_notas_diario(
     Returns:
         dict com {sucesso: bool, status_code: int, mensagem: str, avaliacao: dict}
     """
-    avals = listar_avaliacoes_diario(session, dof)
+    avals = list_diary_assessments(session, dof)
     if not avals:
         raise RuntimeError(f"Nenhuma avaliação encontrada no diário para dof={dof}.")
 
@@ -2073,7 +2073,7 @@ def importar_notas_diario(
 
 # ── Diário — lançamento direto de notas ──────────────────────────────────────
 
-def extrair_mapa_alunos_diario(session: Session, dof: str) -> list[dict]:
+def extract_diary_student_map(session: Session, dof: str) -> list[dict]:
     """Retorna lista de alunos do diário com seus identificadores internos.
 
     Consulta a tabela de notas do diário e extrai os dados de cada aluno
@@ -2140,7 +2140,7 @@ def extrair_mapa_alunos_diario(session: Session, dof: str) -> list[dict]:
     return alunos
 
 
-def lancar_notas_diario(
+def post_diary_grades(
     session: Session,
     dof: str,
     notas: dict,
@@ -2182,7 +2182,7 @@ def lancar_notas_diario(
     soup = _soup(html)
 
     # 2. Extrai alunos (cod_adm + ra + nome)
-    alunos = extrair_mapa_alunos_diario(session, dof)
+    alunos = extract_diary_student_map(session, dof)
 
     # Constrói índices de busca normalizados
     def _norm(s: str) -> str:
@@ -2315,12 +2315,12 @@ def lancar_notas_diario(
 
 # ── Horários ──────────────────────────────────────────────────────────────────
 
-def quadro_horarios(session: Session, ano_periodo: str | None = None) -> list[dict]:
+def list_timetable(session: Session, ano_periodo: str | None = None) -> list[dict]:
     """Retorna quadro de horários do professor.
 
     Returns:
         list[dict] com dia, horário e disciplina.
     """
     params = {"selAnoPeriodo": ano_periodo, "tipRel": "pessoa"}
-    resp = _get(session, "quadro_horarios", params)
+    resp = _get(session, "list_timetable", params)
     return _tabela(_soup(resp.text))

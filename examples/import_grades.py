@@ -7,34 +7,34 @@ Fluxo:
   3. Tenta importar via CSV (endpoint multipart)
   4. Se o CSV falhar (problema com Java multipart), lança nota a nota via saveNota
 
-Parâmetros configuráveis abaixo — ajuste para a sua disciplina.
+Parâmetros configuráveis abaixo — ajuste para a sua discipline.
 """
 import unoesc
 
 # ── Configuração ──────────────────────────────────────────────────────────────
 
-DOF            = "1410552"   # código DOF da disciplina
-ITEM_ID_MOODLE = "5917"      # item_id da atividade no Moodle (listar_itens_avaliacao)
+DOF            = "1410552"   # código DOF da discipline
+ITEM_ID_MOODLE = "5917"      # item_id da atividade no Moodle (list_grade_items)
 NOME_ATIVIDADE = "ATIVIDADE AVALIATIVA 3"
 AVALIACAO_SEQ  = 3           # sequência da avaliação no portal (1=A1/01, 2=A1/02, 3=A1/03)
 COD_TIPO_NOTA  = "24"        # codTipoNota (visto nos spans do HTML do diário)
 
 # ── Início ────────────────────────────────────────────────────────────────────
 
-session = unoesc.abrir_sessao()
-session, course_id = unoesc.abrir_curso(session, DOF)
+session = unoesc.open_session()
+session, course_id = unoesc.open_course(session, DOF)
 
 print(f"Curso Moodle: {course_id}")
 
 # 1. Ver avaliações disponíveis no diário
 print("\n── Avaliações no diário ──")
-avaliacoes = unoesc.listar_avaliacoes_diario(session, DOF)
-for av in avaliacoes:
+assessments = unoesc.list_diary_assessments(session, DOF)
+for av in assessments:
     print(f"  {av['nome']}  (codTipoNota={av['cod_tipo_nota']} avaliacao={av['avaliacao']} nota={av['nota']})")
 
 # 2. Exporta notas do Moodle no formato CSV do Portal
 print(f"\n── Exportando notas do Moodle (item_id={ITEM_ID_MOODLE}) ──")
-csv_path, dados_moodle = unoesc.exportar_notas_para_portal(
+csv_path, dados_moodle = unoesc.export_grades_for_portal(
     session, course_id,
     item_id=ITEM_ID_MOODLE,
     nome_atividade=NOME_ATIVIDADE,
@@ -44,26 +44,26 @@ print(f"Primeiros 3 registros: {dados_moodle[:3]}")
 
 # 3. Tenta importação via CSV (pode falhar em servidores Java antigos sem suporte multipart)
 print("\n── Tentando importação via CSV ──")
-resultado_csv = unoesc.importar_notas_diario(
+resultado_csv = unoesc.import_diary_grades(
     session,
     dof=DOF,
     csv_path=csv_path,
     avaliacao=AVALIACAO_SEQ,
 )
 print(f"Status: {resultado_csv['status_code']}")
-print(f"Mensagem: {resultado_csv['mensagem']}")
+print(f"Mensagem: {resultado_csv['message']}")
 print(f"Avaliação usada: {resultado_csv['avaliacao']}")
 
 # 4. Se o import via CSV não funcionar (ou como alternativa direta),
 #    lança nota por nota via saveNota usando o RA do Moodle como chave.
 #
 #    O e-mail do aluno no Moodle tem formato RA@unoesc.edu.br, mas o CSV
-#    exportado por exportar_notas_para_portal() usa o nome completo.
-#    Para usar RA como chave, exporte via exportar_notas_csv() e extraia
+#    exportado por export_grades_for_portal() usa o nome completo.
+#    Para usar RA como chave, exporte via export_grades_csv() e extraia
 #    o RA do campo "Endereço de e-mail".
 
 print("\n── Mapa de alunos no diário ──")
-alunos_diario = unoesc.extrair_mapa_alunos_diario(session, DOF)
+alunos_diario = unoesc.extract_diary_student_map(session, DOF)
 print(f"{len(alunos_diario)} alunos encontrados no diário.")
 for a in alunos_diario[:3]:
     print(f"  RA={a['ra']}  nome={a['nome']}  cod_adm={a['cod_adm']}")
@@ -72,7 +72,7 @@ for a in alunos_diario[:3]:
 notas_por_nome = {d["Usuário"]: float(d["Avaliação"]) for d in dados_moodle}
 
 print(f"\n── Lançando {len(notas_por_nome)} notas via saveNota ──")
-resultado = unoesc.lancar_notas_diario(
+resultado = unoesc.post_diary_grades(
     session,
     dof=DOF,
     notas=notas_por_nome,
@@ -82,7 +82,7 @@ resultado = unoesc.lancar_notas_diario(
 
 print(f"\nResultado final:")
 print(f"  Total:            {resultado['total']}")
-print(f"  Sucesso:          {resultado['sucesso']}")
+print(f"  Sucesso:          {resultado['success']}")
 print(f"  Falha:            {resultado['falha']}")
 print(f"  Não encontrados:  {len(resultado['nao_encontrados'])}")
 
@@ -93,5 +93,5 @@ if resultado["nao_encontrados"]:
 
 print("\nDetalhes (primeiros 5):")
 for r in resultado["resultados"][:5]:
-    status = "OK" if r["sucesso"] else "FALHA"
+    status = "OK" if r["success"] else "FALHA"
     print(f"  [{status}] {r['nome']} (RA={r['ra']}) nota={r['nota']}  cn={r['cn']}  resp={r['resposta'][:60]!r}")

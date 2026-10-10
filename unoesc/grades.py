@@ -34,7 +34,7 @@ def _form_export(session, course_id, formato="txt"):
     return form, sesskey, item_ids
 
 
-def listar_itens_avaliacao(session: Session, course_id: str) -> list[dict]:
+def list_grade_items(session: Session, course_id: str) -> list[dict]:
     """Lista todas as atividades avaliadas do curso com seus IDs.
 
     Returns:
@@ -59,13 +59,13 @@ def listar_itens_avaliacao(session: Session, course_id: str) -> list[dict]:
     return itens
 
 
-def exportar_notas_csv(session: Session, course_id: str, item_ids: list[str] | None = None, destino: str | None = None, separador: str = "comma") -> tuple[str, list[dict]]:
+def export_grades_csv(session: Session, course_id: str, item_ids: list[str] | None = None, destination: str | None = None, separator: str = "comma") -> tuple[str, list[dict]]:
     """Exporta notas do curso como CSV.
 
     Args:
         item_ids:  list de item_ids a incluir. None = todos.
-        destino:   caminho do arquivo. None = ~/Downloads/notas_<course_id>.csv
-        separador: 'comma' | 'tab' | 'semicolon' | 'colon'
+        destination:   caminho do arquivo. None = ~/Downloads/notas_<course_id>.csv
+        separator: 'comma' | 'tab' | 'semicolon' | 'colon'
 
     Returns:
         (caminho_arquivo, list[dict]): arquivo salvo e dados como lista de dicts.
@@ -83,7 +83,7 @@ def exportar_notas_csv(session: Session, course_id: str, item_ids: list[str] | N
         "_qf__grade_export_form": "1",
         "export_onlyactive": "1",
         "display[real]": "1",
-        "separator": separador,
+        "separator": separator,
         "decimals": "2",
         "submitbutton": "Download",
     }
@@ -92,25 +92,25 @@ def exportar_notas_csv(session: Session, course_id: str, item_ids: list[str] | N
 
     resp_dl = session.post(f"{MOODLE_BASE}/grade/export/txt/export.php", data=data)
 
-    if destino is None:
-        destino = os.path.expanduser(f"~/Downloads/notas_{course_id}.csv")
+    if destination is None:
+        destination = os.path.expanduser(f"~/Downloads/notas_{course_id}.csv")
 
-    with open(destino, "w", encoding="utf-8") as f:
+    with open(destination, "w", encoding="utf-8") as f:
         f.write(resp_dl.text)
 
-    sep_char = {"comma": ",", "tab": "\t", "semicolon": ";", "colon": ":"}.get(separador, ",")
+    sep_char = {"comma": ",", "tab": "\t", "semicolon": ";", "colon": ":"}.get(separator, ",")
     dados = list(csv.DictReader(io.StringIO(resp_dl.text), delimiter=sep_char))
 
-    print(f"Notas exportadas: {len(dados)} alunos → {destino}")
-    return destino, dados
+    print(f"Notas exportadas: {len(dados)} alunos → {destination}")
+    return destination, dados
 
 
-def exportar_notas_excel(session: Session, course_id: str, item_ids: list[str] | None = None, destino: str | None = None) -> str:
+def export_grades_excel(session: Session, course_id: str, item_ids: list[str] | None = None, destination: str | None = None) -> str:
     """Exporta notas do curso como arquivo Excel (.xlsx).
 
     Args:
         item_ids: list de item_ids a incluir. None = todos.
-        destino:  caminho do arquivo. None = ~/Downloads/notas_<course_id>.xlsx
+        destination:  caminho do arquivo. None = ~/Downloads/notas_<course_id>.xlsx
 
     Returns:
         Caminho do arquivo salvo.
@@ -135,21 +135,21 @@ def exportar_notas_excel(session: Session, course_id: str, item_ids: list[str] |
 
     resp_dl = session.post(f"{MOODLE_BASE}/grade/export/xls/export.php", data=data)
 
-    if destino is None:
-        destino = os.path.expanduser(f"~/Downloads/notas_{course_id}.xlsx")
+    if destination is None:
+        destination = os.path.expanduser(f"~/Downloads/notas_{course_id}.xlsx")
 
-    with open(destino, "wb") as f:
+    with open(destination, "wb") as f:
         f.write(resp_dl.content)
 
-    print(f"Excel salvo em: {destino}")
-    return destino
+    print(f"Excel salvo em: {destination}")
+    return destination
 
 
-def exportar_notas_tarefa(session: Session, assign_id: str) -> list[dict]:
+def export_assignment_grades(session: Session, assign_id: str) -> list[dict]:
     """Retorna notas e status de entrega de uma tarefa (assign).
 
     Args:
-        assign_id: activity_id da tarefa (campo 'activity_id' de listar_atividades).
+        assign_id: activity_id da tarefa (campo 'activity_id' de list_activities).
 
     Returns:
         list[dict]: [{aluno, nota, status, data_entrega}, ...]
@@ -174,35 +174,35 @@ def exportar_notas_tarefa(session: Session, assign_id: str) -> list[dict]:
     return linhas
 
 
-def exportar_notas_para_portal(
+def export_grades_for_portal(
     session: Session,
     course_id: str,
     item_id: str,
     nome_atividade: str | None = None,
     tipo: str = "Tarefa",
-    destino: str | None = None,
+    destination: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Exporta notas de uma atividade do Moodle no formato CSV de importação do Portal UNOESC.
 
-    O CSV gerado pode ser enviado via importar_notas_diario() ou importado manualmente
+    O CSV gerado pode ser enviado via import_diary_grades() ou importado manualmente
     no diário de classe do portal.
 
     Args:
-        item_id:        ID da atividade (obtido via listar_itens_avaliacao).
+        item_id:        ID da atividade (obtido via list_grade_items).
         nome_atividade: Nome da atividade no CSV. None = usa o nome do Moodle.
         tipo:           Tipo de atividade ('Tarefa', 'Quiz', etc.).
-        destino:        Caminho do arquivo. None = ~/Downloads/portal_<slug>.csv
+        destination:        Caminho do arquivo. None = ~/Downloads/portal_<slug>.csv
 
     Returns:
         (caminho_arquivo, list[dict]): cada dict tem
         {Usuário, Atividade, Avaliação, Tipo de atividade}
     """
     if nome_atividade is None:
-        itens = listar_itens_avaliacao(session, course_id)
+        itens = list_grade_items(session, course_id)
         item = next((i for i in itens if i["item_id"] == item_id), None)
         nome_atividade = item["nome"] if item else item_id
 
-    _, moodle_dados = exportar_notas_csv(session, course_id, item_ids=[item_id], separador="comma")
+    _, moodle_dados = export_grades_csv(session, course_id, item_ids=[item_id], separator="comma")
 
     # Colunas que não são notas no CSV do Moodle
     PREFIXOS_META = {
@@ -247,24 +247,24 @@ def exportar_notas_para_portal(
             "Tipo de atividade": tipo,
         })
 
-    if destino is None:
+    if destination is None:
         slug = re.sub(r"\W+", "_", nome_atividade).strip("_").lower()
-        destino = os.path.expanduser(f"~/Downloads/portal_{slug}.csv")
+        destination = os.path.expanduser(f"~/Downloads/portal_{slug}.csv")
 
-    with open(destino, "w", encoding="utf-8", newline="") as f:
+    with open(destination, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["Usuário", "Atividade", "Avaliação", "Tipo de atividade"])
         writer.writeheader()
         writer.writerows(resultado)
 
-    print(f"CSV portal gerado: {len(resultado)} alunos → {destino}")
-    return destino, resultado
+    print(f"CSV portal gerado: {len(resultado)} alunos → {destination}")
+    return destination, resultado
 
 
-def exportar_notas_quiz(session: Session, quiz_id: str) -> list[dict]:
+def export_quiz_grades(session: Session, quiz_id: str) -> list[dict]:
     """Retorna relatório de tentativas e notas de um questionário (quiz).
 
     Args:
-        quiz_id: activity_id do quiz (campo 'activity_id' de listar_atividades).
+        quiz_id: activity_id do quiz (campo 'activity_id' de list_activities).
 
     Returns:
         list[dict] com colunas: Nome/Sobrenome, E-mail, Situação,

@@ -15,12 +15,12 @@ O essencial:
    ambiente ou de arquivo com permissão `600`. Se não tiver, pergunte ao humano.
 2. **`dry_run=True` é o padrão e continua assim.** Mostre a prévia do que será escrito e espere confirmação.
 3. **Nada apaga.** Não implemente remoção.
-4. **Mensagem para aluno e lançamento de nota só com ordem explícita** — `enviar_mensagem_alunos`,
-   `enviar_mensagem_turmas`, `comunicar_estudantes`, `enviar_notificacao_on`, `lancar_notas_diario`,
-   `importar_notas_diario`, `lancar_faltas`. Use a leitura equivalente para conferir antes.
+4. **Mensagem para aluno e lançamento de nota só com ordem explícita** — `send_message_to_students`,
+   `send_message_to_classes`, `notify_students`, `send_on_notification`, `post_diary_grades`,
+   `import_diary_grades`, `post_absences`. Use a leitura equivalente para conferir antes.
 5. **Nunca invente dado acadêmico** (nota, turma, aluno, conteúdo de plano). Fonte que não respondeu é fonte que
    não respondeu.
 6. **Dado pessoal de aluno não vai para log nem arquivo temporário.**
 
-Comece lendo `unoesc/__init__.py` (mapa das funções públicas), `exemplos/` (um script por fluxo) e `README.md`
+Comece lendo `unoesc/__init__.py` (mapa das funções públicas), `examples/` (um script por fluxo) e `README.md`
 (referência da API). Ao criar função pública, exporte em `unoesc/__init__.py` e cite na tabela do README.

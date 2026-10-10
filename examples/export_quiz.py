@@ -1,7 +1,7 @@
 """
 Exemplo: exportar questionário Moodle para DOCX e PDF.
 
-Ajuste os parâmetros abaixo para sua disciplina/atividade.
+Ajuste os parâmetros abaixo para sua discipline/atividade.
 """
 import unoesc
 
@@ -14,15 +14,15 @@ INCLUIR_GABARITO = True
 
 # ── Exportação ────────────────────────────────────────────────────────────────
 
-session = unoesc.abrir_sessao()
+session = unoesc.open_session()
 
-resultado = unoesc.exportar_questionario_disciplina(
+resultado = unoesc.export_discipline_quiz(
     session,
-    disciplina_termo=DISCIPLINA,
-    secao_termo=SECAO,
-    atividade_termo=ATIVIDADE,
-    formatos=("docx", "pdf"),
-    incluir_gabarito=INCLUIR_GABARITO,
+    discipline_query=DISCIPLINA,
+    section_query=SECAO,
+    activity_query=ATIVIDADE,
+    formats=("docx", "pdf"),
+    include_answer_key=INCLUIR_GABARITO,
 )
 
 print("\n── Resultado ──")

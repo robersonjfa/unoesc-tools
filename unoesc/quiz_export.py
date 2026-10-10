@@ -18,7 +18,7 @@ from html import unescape
 from bs4 import BeautifulSoup, NavigableString
 from requests import Session
 
-from .moodle import MOODLE_BASE, abrir_curso, buscar_atividade, buscar_secao
+from .moodle import MOODLE_BASE, open_course, find_activity, find_section
 
 _PREVIEW_OPTS = {
     "correctness": "1",
@@ -50,7 +50,7 @@ def _slug(texto: str) -> str:
     return s[:80] or "questionario"
 
 
-def _html_para_texto(node) -> str:
+def _html_to_text(node) -> str:
     """Converte nó HTML em texto preservando quebras de parágrafo."""
     if node is None:
         return ""
@@ -77,7 +77,7 @@ def _html_para_texto(node) -> str:
     return re.sub(r"\n{3,}", "\n\n", texto).strip()
 
 
-def _extrair_imagens(node, session: Session) -> list[dict]:
+def _extract_images(node, session: Session) -> list[dict]:
     """Baixa imagens referenciadas no enunciado/alternativas."""
     imagens = []
     if node is None:
@@ -121,11 +121,11 @@ def _parse_preview_form(form) -> tuple[str, dict]:
     return action, data
 
 
-def _parse_questao_element(que, session: Session) -> dict:
+def _parse_question_element(que, session: Session) -> dict:
     """Parseia um elemento .que do Moodle."""
     qtext = que.select_one(".qtext")
-    enunciado = _html_para_texto(qtext)
-    imagens = _extrair_imagens(qtext, session)
+    enunciado = _html_to_text(qtext)
+    imagens = _extract_images(qtext, session)
 
     alternativas = []
     for div in que.select(".answer > div"):
@@ -172,15 +172,15 @@ def _parse_questao_element(que, session: Session) -> dict:
     }
 
 
-def _parse_questao_preview(html: str, session: Session) -> dict:
+def _parse_question_preview(html: str, session: Session) -> dict:
     soup = _soup(html)
     que = soup.select_one(".que")
     if not que:
         raise RuntimeError("Questão não encontrada na prévia.")
-    return _parse_questao_element(que, session)
+    return _parse_question_element(que, session)
 
 
-def _questao_id_do_html(html: str) -> str | None:
+def _question_id_from_html(html: str) -> str | None:
     m = re.search(r"/question/questiontext/\d+/\d+/(\d+)/", html)
     return m.group(1) if m else None
 
@@ -198,7 +198,7 @@ def _form_hidden_data(form) -> dict[str, str]:
     return data
 
 
-def _aplicar_gabarito(dados: dict, gabarito: dict) -> None:
+def _apply_answer_key(dados: dict, gabarito: dict) -> None:
     """Mescla gabarito do banco na questão extraída da tentativa."""
     rc = gabarito.get("resposta_correta", "")
     if rc:
@@ -213,7 +213,7 @@ def _aplicar_gabarito(dados: dict, gabarito: dict) -> None:
         dados["nome"] = gabarito["nome"]
 
 
-def _iniciar_tentativa_previa(session: Session, cmid: str):
+def _start_preview_attempt(session: Session, cmid: str):
     """Inicia ou continua uma prévia do questionário como professor."""
     resp = session.get(f"{MOODLE_BASE}/mod/quiz/view.php", params={"id": cmid})
     form_start = _soup(resp.text).find("form", action=re.compile("startattempt"))
@@ -237,11 +237,11 @@ def _attempt_id(resp) -> str | None:
     return m.group(1) if m else None
 
 
-def extrair_questoes_quiz(
+def extract_quiz_questions(
     session: Session,
     cmid: str,
     course_id: str,
-    incluir_gabarito: bool = True,
+    include_answer_key: bool = True,
     max_questoes: int | None = None,
 ) -> list[dict]:
     """Extrai as questões sorteadas em uma prévia do questionário (não do banco).
@@ -249,7 +249,7 @@ def extrair_questoes_quiz(
     Inicia 'Ver prévia do questionário' como professor e percorre todas as
     páginas da tentativa, coletando exatamente as questões que compõem o quiz.
     """
-    resp = _iniciar_tentativa_previa(session, cmid)
+    resp = _start_preview_attempt(session, cmid)
     attempt = _attempt_id(resp)
     if not attempt:
         raise RuntimeError("Não foi possível obter o ID da tentativa de prévia.")
@@ -272,22 +272,22 @@ def extrair_questoes_quiz(
                 continue
 
             que_html = str(que)
-            chave = _questao_id_do_html(que_html) or _html_para_texto(qtext)[:200]
+            chave = _question_id_from_html(que_html) or _html_to_text(qtext)[:200]
             if chave in vistos:
                 continue
             vistos.add(chave)
             pagina_tem_questao = True
             numero += 1
 
-            dados = _parse_questao_element(que, session)
+            dados = _parse_question_element(que, session)
             dados["numero"] = numero
-            qid = _questao_id_do_html(que_html)
+            qid = _question_id_from_html(que_html)
             if qid:
                 dados["id"] = qid
-                if incluir_gabarito:
+                if include_answer_key:
                     try:
-                        gab = obter_questao(session, course_id, qid)
-                        _aplicar_gabarito(dados, gab)
+                        gab = get_question(session, course_id, qid)
+                        _apply_answer_key(dados, gab)
                     except Exception:
                         pass
             dados.setdefault("nome", f"Questão {numero}")
@@ -305,7 +305,7 @@ def extrair_questoes_quiz(
     return questoes
 
 
-def listar_questoes_categoria(
+def list_category_questions(
     session: Session,
     course_id: str,
     category_id: str | int | None = None,
@@ -360,7 +360,7 @@ def listar_questoes_categoria(
     return questoes
 
 
-def obter_questao(session: Session, course_id: str, question_id: str) -> dict:
+def get_question(session: Session, course_id: str, question_id: str) -> dict:
     """Obtém enunciado, alternativas e gabarito de uma questão via prévia do professor."""
     params = {
         "id": question_id,
@@ -372,17 +372,17 @@ def obter_questao(session: Session, course_id: str, question_id: str) -> dict:
     soup = _soup(resp.text)
     form = soup.find("form", id="responseform")
     if not form:
-        dados = _parse_questao_preview(resp.text, session)
+        dados = _parse_question_preview(resp.text, session)
         return {"id": question_id, **dados}
 
     action, data = _parse_preview_form(form)
     data["fill"] = "Preencher com respostas corretas"
     resp2 = session.post(action, data=data)
-    dados = _parse_questao_preview(resp2.text, session)
+    dados = _parse_question_preview(resp2.text, session)
     return {"id": question_id, **dados}
 
 
-def listar_categorias_banco(session: Session, course_id: str) -> list[dict]:
+def list_question_bank_categories(session: Session, course_id: str) -> list[dict]:
     """Lista categorias do banco de questões de um curso Moodle.
 
     Returns:
@@ -411,26 +411,26 @@ def listar_categorias_banco(session: Session, course_id: str) -> list[dict]:
     return categorias
 
 
-def extrair_banco_questoes(
+def extract_question_bank(
     session: Session,
     course_id: str,
-    titulo: str | None = None,
+    title: str | None = None,
     categoria_ids: list[str] | None = None,
-    incluir_gabarito: bool = True,
+    include_answer_key: bool = True,
 ) -> dict:
     """Extrai todas as questões do banco de questões de um curso."""
-    categorias = listar_categorias_banco(session, course_id)
+    categorias = list_question_bank_categories(session, course_id)
     if categoria_ids:
         ids_set = {str(i) for i in categoria_ids}
         categorias = [c for c in categorias if c["id"] in ids_set]
     if not categorias:
         raise RuntimeError(f"Nenhuma categoria encontrada no banco do curso {course_id}.")
 
-    if titulo is None:
+    if title is None:
         resp = session.get(f"{MOODLE_BASE}/course/view.php", params={"id": course_id})
         m = re.search(r"<title>(.*?)</title>", resp.text, re.I)
-        titulo = m.group(1).strip() if m else f"curso_{course_id}"
-        titulo = re.sub(r"\s*\|\s*On$", "", titulo)
+        title = m.group(1).strip() if m else f"curso_{course_id}"
+        title = re.sub(r"\s*\|\s*On$", "", title)
 
     blocos = []
     total = 0
@@ -438,7 +438,7 @@ def extrair_banco_questoes(
 
     for cat in categorias:
         print(f"  Categoria [{cat['id']}] {cat['nome']}...")
-        lista = listar_questoes_categoria(session, course_id, cat["id"])
+        lista = list_category_questions(session, course_id, cat["id"])
         questoes = []
         for q in lista:
             if q["id"] in vistos_global:
@@ -446,7 +446,7 @@ def extrair_banco_questoes(
             vistos_global.add(q["id"])
             print(f"    Extraindo [{q['id']}] {q['nome']}...")
             try:
-                dados = obter_questao(session, course_id, q["id"])
+                dados = get_question(session, course_id, q["id"])
                 dados["nome"] = q["nome"]
                 questoes.append(dados)
             except Exception as exc:
@@ -472,91 +472,91 @@ def extrair_banco_questoes(
         raise RuntimeError("Nenhuma questão encontrada no banco de questões.")
 
     return {
-        "titulo": titulo,
+        "title": title,
         "course_id": course_id,
         "total_questoes": total,
-        "fonte": "banco",
+        "source": "banco",
         "blocos": blocos,
-        "incluir_gabarito": incluir_gabarito,
+        "include_answer_key": include_answer_key,
     }
 
 
-def exportar_banco_questoes(
+def export_question_bank(
     session: Session,
     course_id: str,
-    titulo: str | None = None,
+    title: str | None = None,
     categoria_ids: list[str] | None = None,
-    destino: str | None = None,
-    formatos: tuple[str, ...] = ("docx", "pdf"),
-    incluir_gabarito: bool = True,
+    destination: str | None = None,
+    formats: tuple[str, ...] = ("docx", "pdf"),
+    include_answer_key: bool = True,
 ) -> dict:
     """Exporta banco de questões de um curso para DOCX/PDF."""
     print(f"Extraindo banco de questões (course_id={course_id})...")
-    dados = extrair_banco_questoes(
-        session, course_id, titulo=titulo,
+    dados = extract_question_bank(
+        session, course_id, title=title,
         categoria_ids=categoria_ids,
-        incluir_gabarito=incluir_gabarito,
+        include_answer_key=include_answer_key,
     )
 
-    base = destino
+    base = destination
     if base is None:
-        base = os.path.expanduser(f"~/Downloads/{_slug(dados['titulo'])}_banco")
+        base = os.path.expanduser(f"~/Downloads/{_slug(dados['title'])}_banco")
     elif base.endswith((".docx", ".pdf")):
         base = os.path.splitext(base)[0]
 
     resultado = {"dados": dados, "docx": None, "pdf": None}
-    if "docx" in formatos:
-        resultado["docx"] = exportar_questionario_docx(dados, f"{base}.docx")
-    if "pdf" in formatos:
-        resultado["pdf"] = exportar_questionario_pdf(dados, f"{base}.pdf")
+    if "docx" in formats:
+        resultado["docx"] = export_quiz_docx(dados, f"{base}.docx")
+    if "pdf" in formats:
+        resultado["pdf"] = export_quiz_pdf(dados, f"{base}.pdf")
     return resultado
 
 
-def exportar_banco_questoes_disciplina(
+def export_discipline_question_bank(
     session: Session,
-    disciplina_termo: str,
-    destino: str | None = None,
-    formatos: tuple[str, ...] = ("docx", "pdf"),
-    incluir_gabarito: bool = True,
+    discipline_query: str,
+    destination: str | None = None,
+    formats: tuple[str, ...] = ("docx", "pdf"),
+    include_answer_key: bool = True,
     categoria_ids: list[str] | None = None,
 ) -> dict:
-    """Fluxo completo: disciplina → banco de questões → exportação."""
-    from .portal import buscar_disciplina
+    """Fluxo completo: discipline → banco de questões → exportação."""
+    from .portal import find_discipline
 
-    disc = buscar_disciplina(session, disciplina_termo)
+    disc = find_discipline(session, discipline_query)
     if not disc:
-        raise ValueError(f"Disciplina '{disciplina_termo}' não encontrada.")
+        raise ValueError(f"Disciplina '{discipline_query}' não encontrada.")
 
-    session, course_id = abrir_curso(session, disc["dof"])
-    titulo = f"{disc['codigo']} - {disc['nome']}"
+    session, course_id = open_course(session, disc["dof"])
+    title = f"{disc['codigo']} - {disc['nome']}"
 
-    print(f"Disciplina: {titulo}")
+    print(f"Disciplina: {title}")
     print(f"Course ID: {course_id}")
 
-    resultado = exportar_banco_questoes(
+    resultado = export_question_bank(
         session, course_id,
-        titulo=titulo,
+        title=title,
         categoria_ids=categoria_ids,
-        destino=destino,
-        formatos=formatos,
-        incluir_gabarito=incluir_gabarito,
+        destination=destination,
+        formats=formats,
+        include_answer_key=include_answer_key,
     )
-    resultado["disciplina"] = disc
+    resultado["discipline"] = disc
     return resultado
 
 
-def analisar_quiz(session: Session, cmid: str) -> dict:
+def analyze_quiz(session: Session, cmid: str) -> dict:
     """Analisa a estrutura de um questionário (edit.php).
 
     Returns:
-        dict com {titulo, cmid, course_id, slots, categorias}
+        dict com {title, cmid, course_id, slots, categorias}
     """
     resp = session.get(f"{MOODLE_BASE}/mod/quiz/edit.php", params={"cmid": cmid})
     soup = _soup(resp.text)
     titulo_el = soup.find("title")
-    titulo = titulo_el.get_text(strip=True) if titulo_el else ""
-    titulo = re.sub(r"^Editando questionário:\s*", "", titulo)
-    titulo = re.sub(r"\s*\|\s*On$", "", titulo)
+    title = titulo_el.get_text(strip=True) if titulo_el else ""
+    title = re.sub(r"^Editando questionário:\s*", "", title)
+    title = re.sub(r"\s*\|\s*On$", "", title)
 
     m_course = re.search(r'"courseId"\s*:\s*(\d+)', resp.text)
     course_id = m_course.group(1) if m_course else None
@@ -599,7 +599,7 @@ def analisar_quiz(session: Session, cmid: str) -> dict:
         })
 
     return {
-        "titulo": titulo,
+        "title": title,
         "cmid": cmid,
         "course_id": course_id,
         "slots": slots,
@@ -607,44 +607,44 @@ def analisar_quiz(session: Session, cmid: str) -> dict:
     }
 
 
-def extrair_questionario(
+def extract_quiz(
     session: Session,
     course_id: str,
     cmid: str,
-    incluir_gabarito: bool = True,
-    fonte: str = "quiz",
+    include_answer_key: bool = True,
+    source: str = "quiz",
 ) -> dict:
     """Extrai questões de um questionário Moodle.
 
     Args:
-        fonte: 'quiz' = questões sorteadas na prévia do questionário (padrão);
+        source: 'quiz' = questões sorteadas na prévia do questionário (padrão);
                'banco' = todas as questões das categorias do banco (legado).
 
     Returns:
         dict com metadados e lista de questões.
     """
-    info = analisar_quiz(session, cmid)
+    info = analyze_quiz(session, cmid)
 
-    if fonte == "quiz":
+    if source == "quiz":
         print("Extraindo questões via prévia do questionário...")
         n_slots = len(info.get("slots") or [])
-        questoes = extrair_questoes_quiz(
-            session, cmid, course_id, incluir_gabarito,
+        questoes = extract_quiz_questions(
+            session, cmid, course_id, include_answer_key,
             max_questoes=n_slots or None,
         )
         return {
-            "titulo": info["titulo"],
+            "title": info["title"],
             "cmid": cmid,
             "course_id": course_id,
             "slots": info["slots"],
             "total_questoes": len(questoes),
-            "fonte": "quiz",
+            "source": "quiz",
             "blocos": [{"categoria": "Questionário", "questoes": questoes}],
-            "incluir_gabarito": incluir_gabarito,
+            "include_answer_key": include_answer_key,
         }
 
-    # fonte == "banco" — exporta categorias inteiras do banco de questões
-    info = analisar_quiz(session, cmid)
+    # source == "banco" — exporta categorias inteiras do banco de questões
+    info = analyze_quiz(session, cmid)
     cat_ids = list(info["categorias"].keys())
     if not cat_ids:
         raise RuntimeError(
@@ -664,7 +664,7 @@ def extrair_questionario(
         else:
             meta, cat_id, cat_filter = cat_info, cat_key, None
 
-        lista = listar_questoes_categoria(
+        lista = list_category_questions(
             session, course_id,
             category_id=cat_id,
             filter_param=cat_filter,
@@ -676,7 +676,7 @@ def extrair_questionario(
             vistos_global.add(q["id"])
             print(f"  Extraindo [{q['id']}] {q['nome']}...")
             try:
-                dados = obter_questao(session, course_id, q["id"])
+                dados = get_question(session, course_id, q["id"])
                 dados["nome"] = q["nome"]
                 questoes.append(dados)
             except Exception as exc:
@@ -699,18 +699,18 @@ def extrair_questionario(
             })
 
     return {
-        "titulo": info["titulo"],
+        "title": info["title"],
         "cmid": cmid,
         "course_id": course_id,
         "slots": info["slots"],
         "total_questoes": total,
-        "fonte": "banco",
+        "source": "banco",
         "blocos": blocos,
-        "incluir_gabarito": incluir_gabarito,
+        "include_answer_key": include_answer_key,
     }
 
 
-def _salvar_imagem_temp(img: dict) -> str | None:
+def _save_temp_image(img: dict) -> str | None:
     if not img.get("bytes"):
         return None
     ext = img.get("ext", ".png")
@@ -731,16 +731,16 @@ def _salvar_imagem_temp(img: dict) -> str | None:
     return path
 
 
-def exportar_questionario_docx(dados: dict, destino: str | None = None) -> str:
+def export_quiz_docx(dados: dict, destination: str | None = None) -> str:
     """Gera arquivo DOCX a partir dos dados extraídos."""
     from docx import Document
     from docx.shared import Inches, Pt
 
-    if destino is None:
-        destino = os.path.expanduser(f"~/Downloads/{_slug(dados['titulo'])}.docx")
+    if destination is None:
+        destination = os.path.expanduser(f"~/Downloads/{_slug(dados['title'])}.docx")
 
     doc = Document()
-    doc.add_heading(dados["titulo"], level=0)
+    doc.add_heading(dados["title"], level=0)
     doc.add_paragraph(f"Total de questões: {dados['total_questoes']}")
 
     temp_files: list[str] = []
@@ -761,7 +761,7 @@ def exportar_questionario_docx(dados: dict, destino: str | None = None) -> str:
                             doc.add_paragraph(par.strip())
 
                 for img in q.get("imagens", []):
-                    path = _salvar_imagem_temp(img)
+                    path = _save_temp_image(img)
                     if path:
                         temp_files.append(path)
                         try:
@@ -776,17 +776,17 @@ def exportar_questionario_docx(dados: dict, destino: str | None = None) -> str:
                         texto = alt.get("texto", "")
                         linha = f"{prefix}) {texto}" if prefix else texto
                         p = doc.add_paragraph(linha)
-                        if dados.get("incluir_gabarito") and alt.get("correta"):
+                        if dados.get("include_answer_key") and alt.get("correta"):
                             for run in p.runs:
                                 run.bold = True
 
-                if dados.get("incluir_gabarito") and q.get("resposta_correta"):
+                if dados.get("include_answer_key") and q.get("resposta_correta"):
                     p = doc.add_paragraph()
                     run = p.add_run(f"Gabarito: {q['resposta_correta']}")
                     run.bold = True
                     run.font.size = Pt(10)
 
-                if dados.get("incluir_gabarito") and q.get("feedback"):
+                if dados.get("include_answer_key") and q.get("feedback"):
                     doc.add_paragraph(f"Feedback: {q['feedback']}")
 
                 doc.add_paragraph("")
@@ -797,17 +797,17 @@ def exportar_questionario_docx(dados: dict, destino: str | None = None) -> str:
             except OSError:
                 pass
 
-    doc.save(destino)
-    print(f"DOCX salvo em: {destino}")
-    return destino
+    doc.save(destination)
+    print(f"DOCX salvo em: {destination}")
+    return destination
 
 
-def exportar_questionario_pdf(dados: dict, destino: str | None = None) -> str:
+def export_quiz_pdf(dados: dict, destination: str | None = None) -> str:
     """Gera arquivo PDF a partir dos dados extraídos."""
     from fpdf import FPDF
 
-    if destino is None:
-        destino = os.path.expanduser(f"~/Downloads/{_slug(dados['titulo'])}.pdf")
+    if destination is None:
+        destination = os.path.expanduser(f"~/Downloads/{_slug(dados['title'])}.pdf")
 
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -829,7 +829,7 @@ def exportar_questionario_pdf(dados: dict, destino: str | None = None) -> str:
         pdf.multi_cell(0, 6, text)
         pdf.ln(1)
 
-    write_line(dados["titulo"], size=16)
+    write_line(dados["title"], size=16)
     write_line(f"Total de questões: {dados['total_questoes']}", size=10)
     pdf.ln(4)
 
@@ -850,7 +850,7 @@ def exportar_questionario_pdf(dados: dict, destino: str | None = None) -> str:
                     write_line(q["enunciado"])
 
                 for img in q.get("imagens", []):
-                    path = _salvar_imagem_temp(img)
+                    path = _save_temp_image(img)
                     if path:
                         temp_files.append(path)
                         try:
@@ -863,13 +863,13 @@ def exportar_questionario_pdf(dados: dict, destino: str | None = None) -> str:
                     prefix = alt.get("letra", "")
                     texto = alt.get("texto", "")
                     linha = f"  {prefix}) {texto}" if prefix else f"  {texto}"
-                    if dados.get("incluir_gabarito") and alt.get("correta"):
+                    if dados.get("include_answer_key") and alt.get("correta"):
                         linha += "  [correta]"
                     write_line(linha)
 
-                if dados.get("incluir_gabarito") and q.get("resposta_correta"):
+                if dados.get("include_answer_key") and q.get("resposta_correta"):
                     write_line(f"Gabarito: {q['resposta_correta']}")
-                if dados.get("incluir_gabarito") and q.get("feedback"):
+                if dados.get("include_answer_key") and q.get("feedback"):
                     write_line(f"Feedback: {q['feedback']}")
 
                 pdf.ln(4)
@@ -880,98 +880,98 @@ def exportar_questionario_pdf(dados: dict, destino: str | None = None) -> str:
             except OSError:
                 pass
 
-    pdf.output(destino)
-    print(f"PDF salvo em: {destino}")
-    return destino
+    pdf.output(destination)
+    print(f"PDF salvo em: {destination}")
+    return destination
 
 
-def exportar_questionario(
+def export_quiz(
     session: Session,
     course_id: str,
     cmid: str,
-    destino: str | None = None,
-    formatos: tuple[str, ...] = ("docx", "pdf"),
-    incluir_gabarito: bool = True,
-    fonte: str = "quiz",
+    destination: str | None = None,
+    formats: tuple[str, ...] = ("docx", "pdf"),
+    include_answer_key: bool = True,
+    source: str = "quiz",
 ) -> dict:
-    """Extrai questionário e exporta nos formatos solicitados.
+    """Extrai questionário e exporta nos formats solicitados.
 
     Args:
         course_id: ID do curso no Moodle.
-        cmid:      ID da atividade quiz (campo activity_id de listar_atividades).
-        destino:   Caminho base sem extensão. None = ~/Downloads/<titulo>.
-        formatos:  ('docx', 'pdf') ou subset.
-        incluir_gabarito: destaca respostas corretas e feedback.
-        fonte:            'quiz' (padrão) ou 'banco'.
+        cmid:      ID da atividade quiz (campo activity_id de list_activities).
+        destination:   Caminho base sem extensão. None = ~/Downloads/<title>.
+        formats:  ('docx', 'pdf') ou subset.
+        include_answer_key: destaca respostas corretas e feedback.
+        source:            'quiz' (padrão) ou 'banco'.
 
     Returns:
-        dict com {dados, docx, pdf} conforme formatos gerados.
+        dict com {dados, docx, pdf} conforme formats gerados.
     """
     print(f"Extraindo questionário (cmid={cmid})...")
-    dados = extrair_questionario(
+    dados = extract_quiz(
         session, course_id, cmid,
-        incluir_gabarito=incluir_gabarito,
-        fonte=fonte,
+        include_answer_key=include_answer_key,
+        source=source,
     )
 
-    base = destino
+    base = destination
     if base is None:
-        base = os.path.expanduser(f"~/Downloads/{_slug(dados['titulo'])}")
+        base = os.path.expanduser(f"~/Downloads/{_slug(dados['title'])}")
     elif base.endswith((".docx", ".pdf")):
         base = os.path.splitext(base)[0]
 
     resultado = {"dados": dados, "docx": None, "pdf": None}
-    if "docx" in formatos:
-        resultado["docx"] = exportar_questionario_docx(dados, f"{base}.docx")
-    if "pdf" in formatos:
-        resultado["pdf"] = exportar_questionario_pdf(dados, f"{base}.pdf")
+    if "docx" in formats:
+        resultado["docx"] = export_quiz_docx(dados, f"{base}.docx")
+    if "pdf" in formats:
+        resultado["pdf"] = export_quiz_pdf(dados, f"{base}.pdf")
     return resultado
 
 
-def exportar_questionario_disciplina(
+def export_discipline_quiz(
     session: Session,
-    disciplina_termo: str,
-    secao_termo: str,
-    atividade_termo: str,
-    destino: str | None = None,
-    formatos: tuple[str, ...] = ("docx", "pdf"),
-    incluir_gabarito: bool = True,
-    fonte: str = "quiz",
-    abrir_curso_fn=None,
-    listar_disciplinas_fn=None,
+    discipline_query: str,
+    section_query: str,
+    activity_query: str,
+    destination: str | None = None,
+    formats: tuple[str, ...] = ("docx", "pdf"),
+    include_answer_key: bool = True,
+    source: str = "quiz",
+    open_course_fn=None,
+    find_discipline_fn=None,
 ) -> dict:
-    """Fluxo completo: disciplina → seção → atividade quiz → exportação.
+    """Fluxo completo: discipline → seção → atividade quiz → exportação.
 
     Args:
-        disciplina_termo: ex. '10276/EAD54-12' ou 'Banco de Dados'.
-        secao_termo:      ex. 'Semana 7'.
-        atividade_termo:  ex. 'Prova Objetiva'.
-        abrir_curso_fn:   injetável para testes (default: moodle.abrir_curso).
-        listar_disciplinas_fn: injetável para testes.
+        discipline_query: ex. '10276/EAD54-12' ou 'Banco de Dados'.
+        section_query:      ex. 'Semana 7'.
+        activity_query:  ex. 'Prova Objetiva'.
+        open_course_fn:   injetável para testes (default: moodle.open_course).
+        find_discipline_fn: injetável para testes.
 
     Returns:
         dict com paths gerados e metadados.
     """
-    if abrir_curso_fn is None:
+    if open_course_fn is None:
         from . import moodle as moodle_mod
-        abrir_curso_fn = moodle_mod.abrir_curso
-    if listar_disciplinas_fn is None:
+        open_course_fn = moodle_mod.open_course
+    if find_discipline_fn is None:
         from . import portal as portal_mod
-        listar_disciplinas_fn = portal_mod.buscar_disciplina
+        find_discipline_fn = portal_mod.find_discipline
 
-    disc = listar_disciplinas_fn(session, disciplina_termo)
+    disc = find_discipline_fn(session, discipline_query)
     if not disc:
-        raise ValueError(f"Disciplina '{disciplina_termo}' não encontrada.")
+        raise ValueError(f"Disciplina '{discipline_query}' não encontrada.")
 
-    session, course_id = abrir_curso_fn(session, disc["dof"])
-    secao = buscar_secao(session, course_id, secao_termo)
+    session, course_id = open_course_fn(session, disc["dof"])
+    secao = find_section(session, course_id, section_query)
     if not secao:
-        raise ValueError(f"Seção '{secao_termo}' não encontrada no curso {course_id}.")
+        raise ValueError(f"Seção '{section_query}' não encontrada no curso {course_id}.")
 
-    atividade = buscar_atividade(session, secao["section_id"], atividade_termo, tipo="quiz")
+    atividade = find_activity(session, secao["section_id"], activity_query, tipo="quiz")
     if not atividade:
         raise ValueError(
-            f"Questionário '{atividade_termo}' não encontrado na seção '{secao['nome']}'. "
+            f"Questionário '{activity_query}' não encontrado na seção '{secao['nome']}'. "
             "Verifique se a atividade é do tipo quiz nativo (não LTI)."
         )
 
@@ -979,16 +979,16 @@ def exportar_questionario_disciplina(
     print(f"Seção: {secao['nome']}")
     print(f"Atividade: {atividade['nome']} (cmid={atividade['activity_id']})")
 
-    resultado = exportar_questionario(
+    resultado = export_quiz(
         session,
         course_id,
         atividade["activity_id"],
-        destino=destino,
-        formatos=formatos,
-        incluir_gabarito=incluir_gabarito,
-        fonte=fonte,
+        destination=destination,
+        formats=formats,
+        include_answer_key=include_answer_key,
+        source=source,
     )
-    resultado["disciplina"] = disc
+    resultado["discipline"] = disc
     resultado["secao"] = secao
     resultado["atividade"] = atividade
     return resultado

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "unoesc-tools"
-version = "0.2.0"
+version = "0.3.0"
 description = "Ferramentas para automação do Portal de Ensino UNOESC e Moodle ON"
 readme = "README.md"
 requires-python = ">=3.10"

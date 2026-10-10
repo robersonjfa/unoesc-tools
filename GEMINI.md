@@ -11,5 +11,5 @@ Resumo do que não pode ser quebrado:
 - Mensagem para aluno e lançamento de nota exigem ordem explícita; confira antes com as funções de leitura.
 - Nunca invente dado acadêmico, e não coloque dado pessoal de aluno em log ou arquivo temporário.
 
-Mapa rápido: `unoesc/__init__.py` (funções públicas), `exemplos/` (um script por fluxo), `README.md`
+Mapa rápido: `unoesc/__init__.py` (funções públicas), `examples/` (um script por fluxo), `README.md`
 (referência da API completa).
